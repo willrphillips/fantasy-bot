@@ -860,8 +860,15 @@ def main():
             if is_new:
                 counts["new_players"] += 1
 
-            if args.backfill or (is_new and not player_has_history(cur, pid)):
-                # full backfill — either explicit, or new player auto-mini-backfill
+            # Trigger mini-backfill whenever a tracked player has no stat
+            # history yet, regardless of whether ensure_player_metadata
+            # considered them "new". populate_mlb_universe inserts every
+            # active MLB player into `players` up front, so `is_new` is
+            # always False for universe-discovered players — but they
+            # still need their Opening-Day-to-yesterday history walked
+            # the first time they're tracked. Keying on player_has_history
+            # is the right signal.
+            if args.backfill or not player_has_history(cur, pid):
                 start = args.from_date
                 end = to_date
                 backfill_player(cur, pid, start, end, counts)

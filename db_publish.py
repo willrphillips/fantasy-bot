@@ -18,9 +18,11 @@ Cron-friendly. Idempotent — files commit only if SHA changed.
 """
 import argparse
 import base64
+import datetime as dt
 import json
 import logging
 import os
+import sqlite3
 from pathlib import Path
 
 import requests
@@ -58,13 +60,49 @@ def _get_existing_sha(token, path):
     return None
 
 
-def _alert_publish(msg: str):
+def _alert_publish(msg: str, subject: str = "FAILURE: db_publish.py"):
     """Failure-only notification. Throttled one/day by notify.alert."""
     try:
         from notify import alert
-        alert("db_publish", "FAILURE: db_publish.py", msg)
+        alert("db_publish", subject, msg)
     except Exception as e:
         log.error(f"alert dispatch failed: {e}")
+
+
+def _check_freshness():
+    """Bail if stats are stale — prevents publishing yesterday-or-older
+    data when the 3:30 AM ingest failed. Returns the latest date string
+    if fresh; alerts and returns None if stale. An empty / missing db
+    is treated as 'not stale' so init / first-run scenarios don't
+    block."""
+    if not DB_PATH.exists():
+        return ""
+    try:
+        with sqlite3.connect(DB_PATH) as c:
+            row = c.execute(
+                "SELECT MAX(date_pulled) FROM hitting_stats"
+            ).fetchone()
+    except Exception as e:
+        log.error(f"freshness check failed to read db: {e}")
+        return ""  # don't block on a read error; let main path try
+    latest = row[0] if row else None
+    if not latest:
+        return ""
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    if latest < yesterday:
+        msg = (
+            f"hitting_stats latest date = {latest}, expected >= "
+            f"{yesterday}. Refusing to push stale data to GitHub. "
+            f"Investigate why mlb_ingest didn't run or didn't write "
+            f"yesterday's snapshot."
+        )
+        log.error(f"STALE: {msg}")
+        _alert_publish(
+            msg,
+            subject=f"STALE: db_publish.py refused to run (latest={latest})",
+        )
+        return None
+    return latest
 
 
 def commit_file(token, local_path: Path, repo_path: str, message: str):
@@ -98,7 +136,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--db-only", action="store_true")
     ap.add_argument("--views-only", action="store_true")
+    ap.add_argument("--force-stale", action="store_true",
+                    help="bypass the freshness gate (for manual publish)")
     args = ap.parse_args()
+
+    if not args.force_stale and _check_freshness() is None:
+        return 1
 
     try:
         cfg = json.loads(CONFIG_PATH.read_text())
