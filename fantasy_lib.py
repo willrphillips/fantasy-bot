@@ -14,6 +14,7 @@ Key concept: windows are computed by SUBTRACTING two season-to-date snapshots.
     >>> fip_era_gap('up', n=15)
     >>> roster("Captain Phillips")
     >>> trade_scout(target_team="Bay County Buccaneers")
+    >>> roster_optimize("Captain Phillips", days=14)  # add/drop swaps
     >>> health()
 
 Returns pandas DataFrames if pandas available, else list of dicts.
@@ -663,6 +664,359 @@ def trade_scout(target_team: str, sort: str = "hr"):
         """,
         (s_end, r_end, target_team),
     )
+
+
+# ============================================================
+# Roster optimizer
+# ============================================================
+
+# Slot codes that don't constrain position eligibility for overlap purposes.
+# BE/IL/NA = not on the field. P is the universal pitching slot (any pitcher
+# matches any pitcher), so excluding it forces overlap on SP vs RP role.
+_NON_POS_SLOTS = {"BE", "IL", "NA", "IR", "P"}
+
+# Slot codes that mark a player as a pitcher (anything else = hitter).
+_PITCHER_SLOTS = {"SP", "RP", "P"}
+
+
+def _elig_set(raw: Optional[str]) -> set:
+    if not raw:
+        return set()
+    return {s.strip() for s in raw.split(",") if s.strip()}
+
+
+def _is_pitcher(raw: Optional[str]) -> bool:
+    s = _elig_set(raw)
+    if not s:
+        return False
+    return bool(s & _PITCHER_SLOTS)
+
+
+def _positions_overlap(a: Optional[str], b: Optional[str]) -> bool:
+    sa = _elig_set(a) - _NON_POS_SLOTS
+    sb = _elig_set(b) - _NON_POS_SLOTS
+    return bool(sa & sb) if (sa and sb) else False
+
+
+def _roster_hitters(team_name: str, days: int, min_pa: int):
+    """Rostered hitters with L{days} OPS/PA/HR joined."""
+    r_end = latest_roster_date()
+    end = latest_date()
+    end_d = dt.date.fromisoformat(end)
+    start = nearest_snapshot_on_or_before(
+        (end_d - dt.timedelta(days=days)).isoformat()
+    )
+    return query(
+        """
+        SELECT r.player_name AS name, r.slot, r.eligible_pos, r.status,
+               p.team AS mlb_team, p.mlb_id,
+               (he.pa  - COALESCE(hs.pa,  0)) AS pa,
+               (he.hr  - COALESCE(hs.hr,  0)) AS hr,
+               (he.rbi - COALESCE(hs.rbi, 0)) AS rbi,
+               (he.r   - COALESCE(hs.r,   0)) AS r,
+               (he.sb  - COALESCE(hs.sb,  0)) AS sb,
+               ROUND(CAST(he.h - COALESCE(hs.h,0) AS REAL) /
+                     NULLIF(he.ab - COALESCE(hs.ab,0), 0), 3) AS avg,
+               ROUND(
+                 CAST(((he.h - COALESCE(hs.h,0))
+                      + (he.bb - COALESCE(hs.bb,0))
+                      + (he.hbp - COALESCE(hs.hbp,0))) AS REAL)
+                 / NULLIF(
+                     (he.ab - COALESCE(hs.ab,0))
+                     + (he.bb - COALESCE(hs.bb,0))
+                     + (he.hbp - COALESCE(hs.hbp,0))
+                     + (he.sf - COALESCE(hs.sf,0)), 0)
+                 +
+                 CAST(((he.h - COALESCE(hs.h,0))
+                      + (he.doubles - COALESCE(hs.doubles,0))
+                      + 2*(he.triples - COALESCE(hs.triples,0))
+                      + 3*(he.hr - COALESCE(hs.hr,0))) AS REAL)
+                 / NULLIF(he.ab - COALESCE(hs.ab,0), 0), 3) AS ops
+        FROM rosters r
+        LEFT JOIN players p ON p.mlb_id = r.mlb_id
+        LEFT JOIN hitting_stats he
+            ON he.mlb_id = r.mlb_id AND he.date_pulled = ?
+        LEFT JOIN hitting_stats hs
+            ON hs.mlb_id = r.mlb_id AND hs.date_pulled = ?
+        WHERE r.date_pulled = ? AND r.team_name = ?
+          AND (he.pa - COALESCE(hs.pa, 0)) >= ?
+        ORDER BY ops ASC NULLS LAST
+        """,
+        (end, start, r_end, team_name, min_pa),
+    )
+
+
+def _roster_pitchers(team_name: str, days: int, min_ip: float):
+    """Rostered pitchers with L{days} FIP/IP/K joined."""
+    r_end = latest_roster_date()
+    end = latest_date()
+    end_d = dt.date.fromisoformat(end)
+    start = nearest_snapshot_on_or_before(
+        (end_d - dt.timedelta(days=days)).isoformat()
+    )
+    return query(
+        """
+        SELECT r.player_name AS name, r.slot, r.eligible_pos, r.status,
+               p.team AS mlb_team, p.mlb_id,
+               ROUND(pe.ip - COALESCE(ps.ip, 0), 1) AS ip,
+               (pe.so  - COALESCE(ps.so,  0)) AS so,
+               (pe.bb  - COALESCE(ps.bb,  0)) AS bb,
+               (pe.er  - COALESCE(ps.er,  0)) AS er,
+               (pe.w   - COALESCE(ps.w,   0)) AS w,
+               (pe.sv  - COALESCE(ps.sv,  0)) AS sv,
+               (pe.hld - COALESCE(ps.hld, 0)) AS hld,
+               ROUND(CAST(pe.er - COALESCE(ps.er,0) AS REAL) * 9 /
+                     NULLIF(pe.ip - COALESCE(ps.ip,0), 0), 2) AS era,
+               ROUND(CAST((pe.bb - COALESCE(ps.bb,0))
+                        + (pe.h  - COALESCE(ps.h, 0)) AS REAL)
+                     / NULLIF(pe.ip - COALESCE(ps.ip,0), 0), 2) AS whip,
+               ROUND(
+                 (13.0 * (pe.hr - COALESCE(ps.hr,0))
+                  + 3.0 * ((pe.bb - COALESCE(ps.bb,0))
+                          + (pe.hbp - COALESCE(ps.hbp,0)))
+                  - 2.0 * (pe.so - COALESCE(ps.so,0)))
+                 / NULLIF(pe.ip - COALESCE(ps.ip,0), 0) + 3.10, 2) AS fip
+        FROM rosters r
+        LEFT JOIN players p ON p.mlb_id = r.mlb_id
+        LEFT JOIN pitching_stats pe
+            ON pe.mlb_id = r.mlb_id AND pe.date_pulled = ?
+        LEFT JOIN pitching_stats ps
+            ON ps.mlb_id = r.mlb_id AND ps.date_pulled = ?
+        WHERE r.date_pulled = ? AND r.team_name = ?
+          AND (pe.ip - COALESCE(ps.ip, 0)) >= ?
+        ORDER BY fip DESC NULLS LAST
+        """,
+        (end, start, r_end, team_name, min_ip),
+    )
+
+
+def _fa_hitters_window(days: int, min_pa: int, n: int = 60):
+    """Top FA hitters by L{days} OPS, with eligible_pos for matching."""
+    end = latest_date()
+    end_d = dt.date.fromisoformat(end)
+    start = nearest_snapshot_on_or_before(
+        (end_d - dt.timedelta(days=days)).isoformat()
+    )
+    return query(
+        """
+        SELECT f.player_name AS name, f.eligible_pos, p.team AS mlb_team,
+               f.mlb_id, f.owned_pct,
+               (he.pa - COALESCE(hs.pa, 0)) AS pa,
+               (he.hr - COALESCE(hs.hr, 0)) AS hr,
+               (he.rbi - COALESCE(hs.rbi, 0)) AS rbi,
+               (he.r   - COALESCE(hs.r,  0)) AS r,
+               (he.sb  - COALESCE(hs.sb, 0)) AS sb,
+               ROUND(CAST(he.h - COALESCE(hs.h,0) AS REAL) /
+                     NULLIF(he.ab - COALESCE(hs.ab,0), 0), 3) AS avg,
+               ROUND(
+                 CAST(((he.h - COALESCE(hs.h,0))
+                      + (he.bb - COALESCE(hs.bb,0))
+                      + (he.hbp - COALESCE(hs.hbp,0))) AS REAL)
+                 / NULLIF(
+                     (he.ab - COALESCE(hs.ab,0))
+                     + (he.bb - COALESCE(hs.bb,0))
+                     + (he.hbp - COALESCE(hs.hbp,0))
+                     + (he.sf - COALESCE(hs.sf,0)), 0)
+                 +
+                 CAST(((he.h - COALESCE(hs.h,0))
+                      + (he.doubles - COALESCE(hs.doubles,0))
+                      + 2*(he.triples - COALESCE(hs.triples,0))
+                      + 3*(he.hr - COALESCE(hs.hr,0))) AS REAL)
+                 / NULLIF(he.ab - COALESCE(hs.ab,0), 0), 3) AS ops
+        FROM fa_pool f
+        LEFT JOIN players p ON p.mlb_id = f.mlb_id
+        LEFT JOIN hitting_stats he
+            ON he.mlb_id = f.mlb_id AND he.date_pulled = ?
+        LEFT JOIN hitting_stats hs
+            ON hs.mlb_id = f.mlb_id AND hs.date_pulled = ?
+        WHERE f.date_pulled = ?
+          AND (he.pa - COALESCE(hs.pa, 0)) >= ?
+        ORDER BY ops DESC NULLS LAST
+        LIMIT ?
+        """,
+        (end, start, latest_fa_date(), min_pa, n),
+    )
+
+
+def _fa_pitchers_window(days: int, min_ip: float, n: int = 60):
+    """Top FA pitchers by L{days} FIP, with eligible_pos for matching."""
+    end = latest_date()
+    end_d = dt.date.fromisoformat(end)
+    start = nearest_snapshot_on_or_before(
+        (end_d - dt.timedelta(days=days)).isoformat()
+    )
+    return query(
+        """
+        SELECT f.player_name AS name, f.eligible_pos, p.team AS mlb_team,
+               f.mlb_id, f.owned_pct,
+               ROUND(pe.ip - COALESCE(ps.ip, 0), 1) AS ip,
+               (pe.so  - COALESCE(ps.so,  0)) AS so,
+               (pe.bb  - COALESCE(ps.bb,  0)) AS bb,
+               (pe.w   - COALESCE(ps.w,   0)) AS w,
+               (pe.sv  - COALESCE(ps.sv,  0)) AS sv,
+               (pe.hld - COALESCE(ps.hld, 0)) AS hld,
+               ROUND(CAST(pe.er - COALESCE(ps.er,0) AS REAL) * 9 /
+                     NULLIF(pe.ip - COALESCE(ps.ip,0), 0), 2) AS era,
+               ROUND(CAST((pe.bb - COALESCE(ps.bb,0))
+                        + (pe.h  - COALESCE(ps.h, 0)) AS REAL)
+                     / NULLIF(pe.ip - COALESCE(ps.ip,0), 0), 2) AS whip,
+               ROUND(
+                 (13.0 * (pe.hr - COALESCE(ps.hr,0))
+                  + 3.0 * ((pe.bb - COALESCE(ps.bb,0))
+                          + (pe.hbp - COALESCE(ps.hbp,0)))
+                  - 2.0 * (pe.so - COALESCE(ps.so,0)))
+                 / NULLIF(pe.ip - COALESCE(ps.ip,0), 0) + 3.10, 2) AS fip
+        FROM fa_pool f
+        LEFT JOIN players p ON p.mlb_id = f.mlb_id
+        LEFT JOIN pitching_stats pe
+            ON pe.mlb_id = f.mlb_id AND pe.date_pulled = ?
+        LEFT JOIN pitching_stats ps
+            ON ps.mlb_id = f.mlb_id AND ps.date_pulled = ?
+        WHERE f.date_pulled = ?
+          AND (pe.ip - COALESCE(ps.ip, 0)) >= ?
+        ORDER BY fip ASC NULLS LAST
+        LIMIT ?
+        """,
+        (end, start, latest_fa_date(), min_ip, n),
+    )
+
+
+def _rows(df):
+    """Iterate either a pandas DataFrame or list-of-dicts as dicts."""
+    if df is None:
+        return []
+    if hasattr(df, "iterrows"):
+        return [r._asdict() if hasattr(r, "_asdict") else dict(r)
+                for _, r in df.iterrows()]
+    return list(df)
+
+
+def roster_optimize(team_name: str = "Captain Phillips",
+                    days: int = 14,
+                    min_pa: int = 30,
+                    min_ip: float = 5.0,
+                    ops_gap: float = 0.050,
+                    fip_gap: float = 0.50,
+                    n_swaps: int = 10):
+    """
+    Suggest add/drop swaps to improve a roster.
+
+    Hitters ranked by L{days} OPS, pitchers by L{days} FIP. A swap is
+    proposed when:
+      - the FA shares at least one non-bench eligible slot with the
+        rostered player (so they can actually fill the role), AND
+      - the FA beats the rostered player by `ops_gap` (hit) or
+        `fip_gap` (pit) on the L{days} metric.
+
+    Returns a dict of DataFrames (or list-of-dicts when pandas absent):
+        roster_hit, roster_pit  -- your roster ranked worst -> best
+        fa_hit, fa_pit          -- top FAs by the same metric
+        swaps_hit, swaps_pit    -- (drop, add, delta) suggestions
+        drop_only               -- IL / injured players with no FA match,
+                                  flagged as pure drops
+    """
+    rh = _roster_hitters(team_name, days, min_pa)
+    rp = _roster_pitchers(team_name, days, min_ip)
+    fh = _fa_hitters_window(days, min_pa)
+    fp = _fa_pitchers_window(days, min_ip)
+
+    swaps_hit = []
+    for drop in _rows(rh):
+        if drop.get("ops") is None:
+            continue
+        for add in _rows(fh):
+            if add.get("ops") is None:
+                continue
+            if add["ops"] - drop["ops"] < ops_gap:
+                continue
+            if not _positions_overlap(drop.get("eligible_pos"),
+                                      add.get("eligible_pos")):
+                continue
+            swaps_hit.append({
+                "drop": drop["name"],
+                "drop_pos": drop.get("slot"),
+                "drop_ops": drop["ops"],
+                "drop_pa":  drop["pa"],
+                "add":      add["name"],
+                "add_team": add.get("mlb_team"),
+                "add_ops":  add["ops"],
+                "add_pa":   add["pa"],
+                "add_own":  add.get("owned_pct"),
+                "delta_ops": round(add["ops"] - drop["ops"], 3),
+            })
+        if len(swaps_hit) >= n_swaps * 5:
+            break
+    swaps_hit.sort(key=lambda r: r["delta_ops"], reverse=True)
+    swaps_hit = swaps_hit[:n_swaps]
+
+    swaps_pit = []
+    for drop in _rows(rp):
+        if drop.get("fip") is None:
+            continue
+        for add in _rows(fp):
+            if add.get("fip") is None:
+                continue
+            if drop["fip"] - add["fip"] < fip_gap:
+                continue
+            if not _positions_overlap(drop.get("eligible_pos"),
+                                      add.get("eligible_pos")):
+                continue
+            swaps_pit.append({
+                "drop": drop["name"],
+                "drop_pos": drop.get("slot"),
+                "drop_fip": drop["fip"],
+                "drop_ip":  drop["ip"],
+                "add":      add["name"],
+                "add_team": add.get("mlb_team"),
+                "add_fip":  add["fip"],
+                "add_ip":   add["ip"],
+                "add_own":  add.get("owned_pct"),
+                "delta_fip": round(drop["fip"] - add["fip"], 2),
+            })
+        if len(swaps_pit) >= n_swaps * 5:
+            break
+    swaps_pit.sort(key=lambda r: r["delta_fip"], reverse=True)
+    swaps_pit = swaps_pit[:n_swaps]
+
+    # Drop-only: roster players whose status flags them (IL/OUT/etc.) and
+    # who have no proposed swap partner. Surfaces dead weight even when
+    # nothing on FA fits the slot.
+    drop_only = []
+    swap_drop_names = {s["drop"] for s in swaps_hit} | {s["drop"] for s in swaps_pit}
+    for r in _rows(rh) + _rows(rp):
+        status = (r.get("status") or "").upper()
+        if status and status not in ("ACTIVE", "NORMAL", "DAY_TO_DAY", ""):
+            if r["name"] not in swap_drop_names:
+                drop_only.append({
+                    "name": r["name"],
+                    "slot": r.get("slot"),
+                    "status": r.get("status"),
+                    "mlb_team": r.get("mlb_team"),
+                })
+
+    if HAS_PANDAS:
+        return {
+            "team": team_name,
+            "window_days": days,
+            "roster_hit": rh,
+            "roster_pit": rp,
+            "fa_hit": fh,
+            "fa_pit": fp,
+            "swaps_hit": pd.DataFrame(swaps_hit),
+            "swaps_pit": pd.DataFrame(swaps_pit),
+            "drop_only": pd.DataFrame(drop_only),
+        }
+    return {
+        "team": team_name,
+        "window_days": days,
+        "roster_hit": rh,
+        "roster_pit": rp,
+        "fa_hit": fh,
+        "fa_pit": fp,
+        "swaps_hit": swaps_hit,
+        "swaps_pit": swaps_pit,
+        "drop_only": drop_only,
+    }
 
 
 # ============================================================

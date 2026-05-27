@@ -91,6 +91,7 @@ Pre-baked views:
   https://willrphillips.github.io/fantasy-snapshots/views/regression_watch.md
   https://willrphillips.github.io/fantasy-snapshots/views/trade_targets.md
   https://willrphillips.github.io/fantasy-snapshots/views/category_standings.md
+  https://willrphillips.github.io/fantasy-snapshots/views/roster_optimize.md
   https://willrphillips.github.io/fantasy-snapshots/views/pull_status.md
 ```
 

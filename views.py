@@ -15,6 +15,7 @@ Reports generated:
     regression_watch.md    biggest xwOBA-wOBA gaps both directions; ERA-FIP gaps
     trade_targets.md       category surplus/deficit by team
     category_standings.md  current period matchup + season standings
+    roster_optimize.md     L14 add/drop swap suggestions vs the FA pool
     pull_status.md         freshness / row counts / last pull log
 
 Usage:
@@ -231,6 +232,38 @@ def report_category_standings():
     return title + body
 
 
+def report_roster_optimize():
+    title = "# Roster Optimize — L14 Add/Drop Swaps\n\n"
+    body = _ts_line() + "\n"
+    body += (
+        "Hitters ranked by L14 OPS, pitchers by L14 FIP. A swap is shown "
+        "only when the FA shares at least one non-bench eligible slot with "
+        "the rostered player AND clears the gap threshold (OPS +.050 / "
+        "FIP -0.50). Pure drops are roster spots flagged IL/OUT/etc. with "
+        "no FA match.\n\n"
+    )
+    opt_14 = fl.roster_optimize("Captain Phillips", days=14)
+    body += "## Hitter swaps (L14)\n\n"
+    body += _df_to_md(opt_14["swaps_hit"])
+    body += "\n## Pitcher swaps (L14)\n\n"
+    body += _df_to_md(opt_14["swaps_pit"])
+    body += "\n## Pure drop candidates (status flagged, no FA match)\n\n"
+    body += _df_to_md(opt_14["drop_only"])
+
+    body += "\n## Your hitters — L14, worst to best\n\n"
+    body += _df_to_md(opt_14["roster_hit"])
+    body += "\n## Your pitchers — L14, worst to best\n\n"
+    body += _df_to_md(opt_14["roster_pit"])
+
+    opt_30 = fl.roster_optimize("Captain Phillips", days=30,
+                                min_pa=60, min_ip=12)
+    body += "\n## L30 cross-check — hitter swaps\n\n"
+    body += _df_to_md(opt_30["swaps_hit"])
+    body += "\n## L30 cross-check — pitcher swaps\n\n"
+    body += _df_to_md(opt_30["swaps_pit"])
+    return title + body
+
+
 def report_pull_status():
     title = "# Data Pipeline Status\n\n"
     body = _ts_line() + "\n"
@@ -254,6 +287,7 @@ REPORTS = {
     "regression_watch":    report_regression_watch,
     "trade_targets":       report_trade_targets,
     "category_standings":  report_category_standings,
+    "roster_optimize":     report_roster_optimize,
     "pull_status":         report_pull_status,
 }
 
