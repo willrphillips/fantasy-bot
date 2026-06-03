@@ -30,6 +30,17 @@ fabricate, never substitute training-data stats.** Freshest available =
 nightly `snapshot.md` + `fantasy.db` (~03:00 ET, **stats lag ~1 day**) + the
 user's screenshots for anything intraday.
 
+**WebSearch vs WebFetch (Regime B):** `WebSearch` works (routes through
+Anthropic); `WebFetch` and direct host fetches are blocked (403). Use WebSearch
+ONLY for the real MLB **schedule / which teams are off** — its player data
+(probables, stats) is real-world MLB and **diverges from this simulated league**
+(e.g. it lists injured-FA Cole as a starter). Never use web player data for
+roster decisions; keep stats on `fantasy.db`/`snapshot.md`.
+
+**Playoff odds:** run `python3 playoff_odds.py` (Monte Carlo off snapshot's
+Season-Long Category Totals; TOP 4 make playoffs). Update its `T`/`REC` dicts
+from a fresh snapshot; trust the scenario *deltas* over absolute levels.
+
 ---
 
 ## STEP 1 — League state: `snapshot.md` is the source of truth
