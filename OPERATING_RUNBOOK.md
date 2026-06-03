@@ -68,6 +68,8 @@ NOT the db `eligible_pos` strings** (combo labels like "2B/SS" mislead). No app
   (+ SV punted). Improvement priority within targets: **HR / RBI / AVG**, then HLD.
 - Roster: 19 active (C/1B/2B/3B/SS/3×OF/UTIL + 7 P + 3 BE) + 3 IL. Daily lineups.
 - **Rolling 24h waivers, no FAAB. Ownership % meaningless** (closed 10-team).
+- **Acquisition cap: 7 add/drops per matchup week** (ESPN "Matchup Acquisitions
+  X/7"). Don't burn the limit on low-EV churn — bank moves for real upgrades.
 
 ## STEP 4 — Hard rules
 
