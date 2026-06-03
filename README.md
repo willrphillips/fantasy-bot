@@ -1,8 +1,16 @@
 # Fantasy Bot — Data Layer
 
 SQLite-based MLB + ESPN fantasy ingest. Builds a daily-snapshot time series
-of every rostered player + top 200 FAs. Computes L7 / L14 / L30 / any window
-on demand via subtraction of season-to-date snapshots.
+of every active MLB player (~1110) plus the ESPN league roster + FA pool.
+Computes L7 / L14 / L30 / any window on demand via subtraction of
+season-to-date snapshots.
+
+**Related repo:** generated data + nightly markdown views are published to
+[willrphillips/fantasy-snapshots](https://github.com/willrphillips/fantasy-snapshots) —
+that's where `db_publish.py` and `league_snapshot.py` push their output every
+night. The chat project and Claude Code on mobile read from that repo's
+GitHub Pages URLs. See [`CLAUDE.md`](CLAUDE.md) in this repo for the
+canonical project context, schema, and load-bearing decisions.
 
 ## Files
 

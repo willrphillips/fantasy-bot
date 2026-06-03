@@ -434,10 +434,34 @@ def hot_bats(days: int = 14, n: int = 20, min_pa: int = 30,
                  NULLIF(he.ab - COALESCE(hs.ab, 0), 0), 3) AS avg,
            ROUND(
              CAST(((he.h - COALESCE(hs.h,0))
+                  + (he.bb - COALESCE(hs.bb,0))
+                  + (he.hbp - COALESCE(hs.hbp,0))) AS REAL)
+             / NULLIF(
+                 (he.ab - COALESCE(hs.ab,0))
+                 + (he.bb - COALESCE(hs.bb,0))
+                 + (he.hbp - COALESCE(hs.hbp,0))
+                 + (he.sf - COALESCE(hs.sf,0)), 0), 3) AS obp,
+           ROUND(
+             CAST(((he.h - COALESCE(hs.h,0))
                   + (he.doubles - COALESCE(hs.doubles,0))
                   + 2*(he.triples - COALESCE(hs.triples,0))
                   + 3*(he.hr - COALESCE(hs.hr,0))) AS REAL)
-             / NULLIF(he.ab - COALESCE(hs.ab, 0), 0), 3) AS slg
+             / NULLIF(he.ab - COALESCE(hs.ab, 0), 0), 3) AS slg,
+           ROUND(
+             CAST(((he.h - COALESCE(hs.h,0))
+                  + (he.bb - COALESCE(hs.bb,0))
+                  + (he.hbp - COALESCE(hs.hbp,0))) AS REAL)
+             / NULLIF(
+                 (he.ab - COALESCE(hs.ab,0))
+                 + (he.bb - COALESCE(hs.bb,0))
+                 + (he.hbp - COALESCE(hs.hbp,0))
+                 + (he.sf - COALESCE(hs.sf,0)), 0)
+             +
+             CAST(((he.h - COALESCE(hs.h,0))
+                  + (he.doubles - COALESCE(hs.doubles,0))
+                  + 2*(he.triples - COALESCE(hs.triples,0))
+                  + 3*(he.hr - COALESCE(hs.hr,0))) AS REAL)
+             / NULLIF(he.ab - COALESCE(hs.ab, 0), 0), 3) AS ops
     FROM hitting_stats he
     LEFT JOIN hitting_stats hs
       ON hs.mlb_id = he.mlb_id AND hs.date_pulled = ?
@@ -454,7 +478,7 @@ def hot_bats(days: int = 14, n: int = 20, min_pa: int = 30,
     if my_team_only:
         final_params.append(latest_roster_date())
     final_params.append(n)
-    sql += " ORDER BY slg DESC NULLS LAST LIMIT ?"
+    sql += " ORDER BY ops DESC NULLS LAST LIMIT ?"
     return query(sql, tuple(final_params))
 
 

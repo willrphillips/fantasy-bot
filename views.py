@@ -36,6 +36,37 @@ OUT_DIR = Path(os.path.expanduser("~/fantasy-bot/public/views"))
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _check_freshness():
+    """Bail if stats are stale — prevents publishing yesterday-or-older
+    data when the 3:30 AM ingest failed. Returns the latest date if
+    fresh; sends an alert and returns None if stale. An empty db
+    (first-run case) is treated as 'not stale' so init runs aren't
+    blocked."""
+    latest = fl.latest_date()
+    if not latest:
+        return ""  # empty db, let downstream handle
+    yesterday = (dt.date.today() - dt.timedelta(days=1)).isoformat()
+    if latest < yesterday:
+        msg = (
+            f"hitting_stats latest date = {latest}, expected >= "
+            f"{yesterday}. Refusing to regenerate views against stale "
+            f"data. Investigate why mlb_ingest didn't run or didn't "
+            f"write yesterday's snapshot."
+        )
+        print(f"STALE: {msg}", file=sys.stderr)
+        try:
+            from notify import alert
+            alert(
+                "views",
+                f"STALE: views.py refused to run (latest={latest})",
+                msg,
+            )
+        except Exception as e:
+            print(f"alert dispatch failed: {e}", file=sys.stderr)
+        return None
+    return latest
+
+
 def _ts_line():
     return f"_Generated: {dt.datetime.now().isoformat(timespec='minutes')} ET — db latest pull: {fl.latest_date()}_\n"
 
@@ -231,7 +262,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--only", type=str, default=None,
                     help="generate only one report by name")
+    ap.add_argument("--force-stale", action="store_true",
+                    help="bypass the freshness gate (for manual regen)")
     args = ap.parse_args()
+
+    if not args.force_stale and _check_freshness() is None:
+        return 1
 
     targets = [args.only] if args.only else list(REPORTS.keys())
     failures = []
@@ -266,7 +302,9 @@ def main():
 
 if __name__ == "__main__":
     try:
-        main()
+        raise SystemExit(main() or 0)
+    except SystemExit:
+        raise
     except Exception as e:
         import traceback
         try:
