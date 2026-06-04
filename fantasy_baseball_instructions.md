@@ -29,7 +29,7 @@ There are two independent data systems on the iMac. Both publish to public GitHu
 - **Published to:**
   - SQLite database: `https://willrphillips.github.io/fantasy-snapshots/data/fantasy.db`
   - Views: `https://willrphillips.github.io/fantasy-snapshots/views/team_review.md`
-  - …and `waiver_hitters.md`, `waiver_pitchers.md`, `regression_watch.md`, `trade_targets.md`, `category_standings.md`, `pull_status.md`
+  - …and `waiver_hitters.md`, `waiver_pitchers.md`, `regression_watch.md`, `trade_targets.md`, `category_standings.md`, `pull_status.md`, `anomaly_digest.md`
 - **Contains:** Daily season-to-date snapshots since 2026-03-26 (Opening Day) for every active MLB player (~1110), plus Statcast advanced metrics (xwOBA, xBA, Barrel%, Hard-Hit%, etc.), plus daily ESPN roster/FA/standings/matchup snapshots.
 - **Use this when:** the question is about player performance — windows (L7/L14/L30), regression watch, hot/cold streaks, advanced metrics, season-to-date stats, trade-scout deep dives.
 
@@ -530,12 +530,18 @@ This is GitHub Pages, not raw.githubusercontent.com. Pages serves the same `snap
 - `https://willrphillips.github.io/fantasy-snapshots/views/trade_targets.md`
 - `https://willrphillips.github.io/fantasy-snapshots/views/category_standings.md`
 - `https://willrphillips.github.io/fantasy-snapshots/views/pull_status.md`
+- `https://willrphillips.github.io/fantasy-snapshots/views/anomaly_digest.md`
 
 Each view has a `_Generated:` header with the snapshot date — cite it.
 
+**Known data caveats:** the `matchups` table is empty, so the "current
+matchup" section of `category_standings.md` is unreliable; and db
+`standings.rank` does not match ESPN tiebreakers. Use `snapshot.md`
+(league_snapshot pipeline) for live matchup state and true standings.
+
 **For ad-hoc queries against fantasy.db (Claude Chat cannot run SQLite):**
 
-1. **First, check the seven pre-baked views.** Most questions are already answered there. The view URLs cover team review, waiver hitters/pitchers, regression watch, trade targets, category standings, and pull status.
+1. **First, check the eight pre-baked views.** Most questions are already answered there. The view URLs cover team review, waiver hitters/pitchers, regression watch, trade targets, category standings, pull status, and the anomaly digest (standout game lines).
 2. **If a view doesn't have it, ask Claude Code** — Will can paste the question into his Claude Code session, which has fantasy.db access and can run any `fantasy_lib` function locally. Equivalent commands (FYI, do NOT ask Will to SSH from a phone):
 
    ```python

@@ -25,6 +25,7 @@ access via these URLs (no auth required):
   - `https://willrphillips.github.io/fantasy-snapshots/views/trade_targets.md` — other teams' rosters by HR
   - `https://willrphillips.github.io/fantasy-snapshots/views/category_standings.md` — standings + current matchup
   - `https://willrphillips.github.io/fantasy-snapshots/views/pull_status.md` — pipeline freshness + last pull log
+  - `https://willrphillips.github.io/fantasy-snapshots/views/anomaly_digest.md` — standout game lines (yesterday) vs season baseline
 
 Default behavior for any analysis request:
 
@@ -41,6 +42,11 @@ Default behavior for any analysis request:
 4. **State your snapshot date** in any analysis — e.g., "as of the
    2026-05-20 snapshot, Soto is ...". The pipeline updates daily but
    not in real time.
+5. **Known data caveats.** The `matchups` table is empty (the "current
+   matchup" section of `category_standings.md` is unreliable) and db
+   `standings.rank` does not match ESPN's tiebreakers. For live
+   matchup state and true standings, use `snapshot.md` from the
+   league_snapshot pipeline, not these views.
 
 How the data model works (load-bearing):
 
