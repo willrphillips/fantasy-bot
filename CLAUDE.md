@@ -23,6 +23,7 @@ The owner of the league is "Captain Phillips" (team_id=9, league_id
 3:00  espn_nightly_moves.py + league_snapshot.py   (pre-existing, untouched)
 3:30  mlb_ingest.py            -> fantasy.db rows for every tracked player
 4:30  views.py                  -> public/views/*.md
+4:45  anomaly.py                -> public/views/anomaly_digest.md
 5:00  db_publish.py             -> push fantasy.db + views to GitHub
 6:00  health_check.py           -> independent watchdog, fails -> email
 ```
@@ -152,6 +153,7 @@ Views:
 - `https://willrphillips.github.io/fantasy-snapshots/views/trade_targets.md`
 - `https://willrphillips.github.io/fantasy-snapshots/views/category_standings.md`
 - `https://willrphillips.github.io/fantasy-snapshots/views/pull_status.md`
+- `https://willrphillips.github.io/fantasy-snapshots/views/anomaly_digest.md`
 
 ## File map
 
@@ -160,7 +162,8 @@ Views:
 | `db_init.py` | One-time schema setup. `--reset` drops everything (destructive). |
 | `mlb_ingest.py` | Daily + backfill ingest. Modes: `--backfill`, `--only-fantasy`, `--player NAME`, `--limit N`. |
 | `fantasy_lib.py` | Query helper. Honors `FANTASY_DB` env var. |
-| `views.py` | Generate the seven markdown reports. |
+| `views.py` | Generate the seven core markdown reports. |
+| `anomaly.py` | Build `anomaly_digest.md` — standout single-game lines vs season baseline. Daily delta via 1-day snapshot subtraction (INNER JOIN to prior snapshot, never COALESCE-to-zero). Writes into the views dir; `db_publish` globs it. |
 | `db_publish.py` | Push fantasy.db + views to GitHub via Contents API. |
 | `health_check.py` | Independent watchdog. Reads only; alerts on freshness, coverage, errors, URL reachability. |
 | `notify.py` | `alert(script, subject, body)`. Failure-only, throttled. |

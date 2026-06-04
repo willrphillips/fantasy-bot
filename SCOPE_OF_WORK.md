@@ -4,6 +4,58 @@ Dated status log for the fantasy-bot data pipeline (the iMac MLB
 ingest + publish system). The pre-existing `espn_nightly_moves`,
 `league_snapshot`, and `espn_weekly_report` jobs are out of scope.
 
+## 2026-06-04 — finalize: anomaly digest, repo cleanup, heartbeat confirmed
+
+Ingest/publish confirmed live: nightly pull 21 (2026-06-04, mode
+nightly, 0 errors, 14.4 min), db + views published to GitHub Pages at
+09:01 GMT, public URLs return 200. NOTE — "0 errors" means the run
+finalized; it does not mean every derived table is correct.
+`OPERATING_RUNBOOK.md` (added in parallel work) records two real
+data-correctness defects that stand: the `matchups` table is empty
+(all `leader='tied'`, values NULL — `category_standings.md`'s matchup
+section is unreliable; use `snapshot.md`), and `standings.rank` does
+not match ESPN's tiebreakers. Both predate this session and are
+out of scope here; flagged so the "live" claim isn't read as
+"everything correct." The stat / window / waiver / anomaly paths are
+sound. Three finishing items completed.
+
+- **Anomaly digest added (`anomaly.py`).** Builds an 8th view,
+  `anomaly_digest.md` — the standout single-game hitting and pitching
+  lines from the most recent game day, each shown against the player's
+  season-to-date baseline. Implemented as a deterministic Python script
+  (chosen over a Claude-Code agent: consistent with the all-Python
+  pipeline, no per-run LLM cost, version-controlled, deployable to the
+  iMac). Daily line = latest snapshot minus the prior snapshot.
+  **Load-bearing: INNER JOIN to the prior snapshot, never
+  COALESCE-to-zero** — a LEFT JOIN would report a player's whole season
+  as one game whenever the prior-day row is missing. Honesty: baselines
+  are season-to-date only (no career data in this db; never claims
+  "career best"). Writes into `public/views/`, so `db_publish.py`'s
+  `*.md` glob and `health_check.py`'s freshness glob both pick it up
+  with no change. New cron line at 4:45 (after views, before publish).
+  Verified live against the published 2026-06-03 db: sensible output,
+  correct slash baselines. Fixed a latent cross-platform bug — writes
+  now force `encoding="utf-8"` (the digest uses em dash / ≤; the iMac is
+  UTF-8 but `write_text` defaults to the platform codec).
+- **Repo cleanup.** Removed two superseded tracked docs:
+  `fantasy baseball instructions.txt` and
+  `fantasy_baseball_project_context.md`. The canonical
+  `fantasy_baseball_instructions.md` states verbatim that it supersedes
+  the `.txt`; the `project_context.md` was the same older content.
+  Kept `fantasy_baseball_instructions.md` (canonical chat context) and
+  `CHAT_PROJECT_INSTRUCTIONS.md` (the distinct claude.ai paste). Also
+  committed the previously-untracked `SUGGESTED_AGENTS.md`. `files.zip`
+  stays gitignored (build artifact). Parallel work's
+  `OPERATING_RUNBOOK.md` referenced the deleted `.txt` by name in three
+  places; repointed all three to the canonical
+  `fantasy_baseball_instructions.md` (which preserves the `.txt`'s rules
+  verbatim) so no reference dangles.
+- **Heartbeat decision confirmed, not changed.** Reviewed the
+  failure-only alerting design and kept it. Silence = green is
+  acceptable because `health_check.py` is the independent watchdog and
+  is the one thing that catches "cron never fired at all." No daily or
+  weekly heartbeat added — see the locked decision below, which stands.
+
 ## 2026-05-21 — universe expansion, statcast fix
 
 - **Statcast BOM bug fixed.** Savant's CSV ships a UTF-8 BOM

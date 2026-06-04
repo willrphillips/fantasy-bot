@@ -1,7 +1,7 @@
 # Captain Phillips — Fantasy Operating Runbook
 
 Operating procedure for Claude when handling Captain Phillips fantasy-baseball
-requests. Read this **and** `fantasy baseball instructions.txt` before answering.
+requests. Read this **and** `fantasy_baseball_instructions.md` before answering.
 This file adds the **environment-aware execution layer** and records **known
 breakage** discovered in the pipeline.
 
@@ -101,7 +101,7 @@ NOT the db `eligible_pos` strings** (combo labels like "2B/SS" mislead). No app
 
 ## STEP 6 — Forced Output Template (every add/drop; shown in output)
 
-See `fantasy baseball instructions.txt`. In Regime B, fill `source` as
+See `fantasy_baseball_instructions.md`. In Regime B, fill `source` as
 `snapshot.md`/`fantasy.db (gen DATE, ~1-day lag)`; if a field needs a live pull
 that's unavailable, write **"need to verify [X] live before recommending."**
 
@@ -125,7 +125,7 @@ that's unavailable, write **"need to verify [X] live before recommending."**
 
 **Environment (Regime B / web)**
 6. `willrphillips.github.io` returns 403 — the documented fetch URLs in both the
-   spec and `fantasy baseball instructions.txt` are unreachable here.
+   spec and `fantasy_baseball_instructions.md` are unreachable here.
 7. `statsapi.mlb.com` returns 403 — the "live pull only" rule is unenforceable;
    game logs, intraday hot/cold, and untracked-FA pulls are impossible.
 8. `baseballsavant.mlb.com` returns 403 — no live Statcast/advanced pulls.

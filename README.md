@@ -20,7 +20,9 @@ canonical project context, schema, and load-bearing decisions.
 | `mlb_ingest.py` | Daily + backfill ingest (MLB API + Savant + ESPN) |
 | `fantasy_lib.py` | Query helper for Claude Code / interactive use |
 | `views.py` | Generate pre-baked Markdown reports |
+| `anomaly.py` | Nightly digest of standout single-game lines (8th view) |
 | `db_publish.py` | Push fantasy.db + views to GitHub |
+| `health_check.py` | Independent watchdog (freshness, coverage, URL) |
 
 ## Initial setup
 
@@ -59,20 +61,31 @@ Add to `crontab -e`:
 # 3:30 AM ET — daily MLB+ESPN ingest
 30 3 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 mlb_ingest.py >> /Users/claudeserver/fantasy-bot/ingest.log 2>&1
 
-# 3:55 AM ET — regenerate pre-baked views
-55 3 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 views.py >> /Users/claudeserver/fantasy-bot/views.log 2>&1
+# 4:30 AM ET — regenerate pre-baked views
+30 4 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 views.py >> /Users/claudeserver/fantasy-bot/views.log 2>&1
 
-# 4:00 AM ET — push db + views to GitHub
-0 4 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 db_publish.py >> /Users/claudeserver/fantasy-bot/publish.log 2>&1
+# 4:45 AM ET — build the anomaly digest (writes anomaly_digest.md into the views dir)
+45 4 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 anomaly.py >> /Users/claudeserver/fantasy-bot/anomaly.log 2>&1
+
+# 5:00 AM ET — push db + views to GitHub
+0 5 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 db_publish.py >> /Users/claudeserver/fantasy-bot/publish.log 2>&1
+
+# 6:00 AM ET — independent watchdog (alerts on any failure)
+0 6 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 health_check.py >> /Users/claudeserver/fantasy-bot/health.log 2>&1
 ```
+
+`anomaly.py` writes into the same `public/views/` dir, so `db_publish.py`
+(which globs `*.md`) picks it up automatically — no publish change needed.
 
 ## Daily flow
 
 ```
 3:00 AM  league_snapshot.py runs (existing)            -> snapshot.md
 3:30 AM  mlb_ingest.py runs                            -> fantasy.db row per player
-3:55 AM  views.py runs                                 -> public/views/*.md
-4:00 AM  db_publish.py pushes to GitHub                -> data/fantasy.db + views/*.md
+4:30 AM  views.py runs                                 -> public/views/*.md
+4:45 AM  anomaly.py runs                               -> public/views/anomaly_digest.md
+5:00 AM  db_publish.py pushes to GitHub                -> data/fantasy.db + views/*.md
+6:00 AM  health_check.py runs                          -> failure-only email alert
 ```
 
 ## Public URLs
@@ -92,6 +105,7 @@ Pre-baked views:
   https://willrphillips.github.io/fantasy-snapshots/views/trade_targets.md
   https://willrphillips.github.io/fantasy-snapshots/views/category_standings.md
   https://willrphillips.github.io/fantasy-snapshots/views/pull_status.md
+  https://willrphillips.github.io/fantasy-snapshots/views/anomaly_digest.md
 ```
 
 ## Claude Code workflow (on PC, not iMac)
@@ -127,6 +141,9 @@ copy without modification.
 
 # Generate just one view
 ./venv/bin/python3 views.py --only team_review
+
+# Preview tonight's anomaly digest without writing the file
+./venv/bin/python3 anomaly.py --stdout
 
 # Push only the db (skip views)
 ./venv/bin/python3 db_publish.py --db-only
