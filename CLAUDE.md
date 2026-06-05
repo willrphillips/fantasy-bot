@@ -133,6 +133,15 @@ the constraints below.
   side).** A bad `mlb_id` value (e.g., the year "2026") will collapse
   every row of a side into one. If statcast row count looks tiny,
   check column extraction.
+- **Matchup ingest reads `value`, not `score`, and `leader` comes from
+  ESPN's `result` field.** espn_api box scores are `{CAT: {"value":
+  float, "result": "WIN"|"LOSS"|"TIE"|None}}`. `fetch_fantasy_state`
+  reads `value`, sets `leader` from the home `result` (so lower-is-
+  better cats ERA/WHIP are correct — never re-derive `leader` from a raw
+  value comparison), and **skips component stats** (AB/H/OUTS/ER/P_H/
+  P_BB, `result=None`) so only the 11 scored cats persist. `standings`
+  rank is pinned to ESPN's `team.standing`; `pct = (wins+0.5*ties)/gp`.
+  Fixed 2026-06-05; don't undo.
 - **fantasy.db is gitignored** in this repo. The data lives at
   `willrphillips/fantasy-snapshots`. Don't add it here.
 - **`config.json` is gitignored.** It contains `espn_s2`, `swid`,

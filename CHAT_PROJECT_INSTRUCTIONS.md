@@ -42,11 +42,11 @@ Default behavior for any analysis request:
 4. **State your snapshot date** in any analysis — e.g., "as of the
    2026-05-20 snapshot, Soto is ...". The pipeline updates daily but
    not in real time.
-5. **Known data caveats.** The `matchups` table is empty (the "current
-   matchup" section of `category_standings.md` is unreliable) and db
-   `standings.rank` does not match ESPN's tiebreakers. For live
-   matchup state and true standings, use `snapshot.md` from the
-   league_snapshot pipeline, not these views.
+5. **Data notes.** As of 2026-06-05 the `matchups` table and
+   `standings.rank` are fixed: `category_standings.md` now carries real
+   category-by-category state (only the 11 scored cats) and rank matches
+   ESPN. `snapshot.md` from the league_snapshot pipeline remains a valid
+   cross-check for live matchup state and standings.
 
 How the data model works (load-bearing):
 
