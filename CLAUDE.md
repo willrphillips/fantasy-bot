@@ -4,6 +4,29 @@ Read this first. It captures the load-bearing decisions and the
 non-obvious constraints. The README documents how to run the pipeline;
 this file documents how to reason about it.
 
+## Operating preferences (how to respond)
+
+These apply to every session, both Claude Code and Claude Chat.
+
+- **Timestamp every reply.** Begin each response with a short timestamp
+  in US Eastern time, e.g. `[2026-06-08 7:21 PM EDT]` (EDT in summer,
+  EST in winter — let the clock decide).
+- **Lead with the recommendation, then the numbers.** Be brief. Give the
+  call (start/sit, add/drop, trade verdict) first, justify with data
+  after. No hedging, no fantasy-is-random disclaimers.
+- **Strategy C stands.** Hard-punt SV + SB. Prioritize HR/RBI (the weak
+  cats); protect the W / ERA / WHIP / K edge. HLD is a scoring cat.
+- **Confirm everything; never fabricate.** Ground every stat in
+  `fantasy.db` / `snapshot.md`. Do NOT use live web stats to value
+  players — this league is a simulated universe and diverges from
+  real-world MLB. Cross-check db (System 2) against snapshot (System 1)
+  instead; if a number can't be confirmed, say so.
+- **Quantify roster/trade/waiver moves.** Run `playoff_odds.py` (refresh
+  its `T`/`REC` from the latest snapshot first) and report the playoff-
+  odds delta. Trust the scenario deltas over absolute levels.
+- **Trust the ESPN app for position eligibility,** not the db
+  `eligible_pos` strings (combo labels like "2B/SS" mislead).
+
 ## What this is
 
 A data layer for ESPN fantasy baseball. The iMac "Cocky-Claude" pulls
