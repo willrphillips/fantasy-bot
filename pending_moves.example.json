@@ -1,0 +1,25 @@
+{
+  "_comment": "Template. apply_pending.py runs entries whose id it hasn't applied yet. apply:false = dry run (logged, not submitted, stays queued). Copy to pending_moves.json to use.",
+  "moves": [
+    {
+      "id": "2026-06-10-bench-langeliers-test",
+      "type": "lineup",
+      "apply": false,
+      "starters": [
+        "Samuel Basallo", "Freddie Freeman", "Casey Schmitt", "Max Muncy",
+        "Kevin McGonigle", "Juan Soto", "JJ Bleday", "Brandon Marsh",
+        "Willson Contreras", "Yoshinobu Yamamoto", "Emerson Hancock",
+        "Bryce Elder", "Trey Yesavage", "Braxton Ashcraft", "Gregory Soto",
+        "Landen Roupp"
+      ]
+    },
+    {
+      "id": "2026-06-10-benbrown",
+      "type": "waiver",
+      "apply": false,
+      "add": "Ben Brown",
+      "drop": "Landen Roupp",
+      "txn_type": "WAIVER"
+    }
+  ]
+}
