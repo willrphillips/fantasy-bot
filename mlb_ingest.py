@@ -575,21 +575,32 @@ def fetch_fantasy_state(cur, lg, today):
             )
             out["roster_rows"] += 1
 
-    # Standings
+    # Standings. rank = ESPN's authoritative `team.standing` (already
+    # tiebreaker-resolved), not the loop index. pct counts ties as half
+    # a win, matching ESPN's H2H category win% (raw wins/gp understated
+    # every team and could reorder ties-heavy records).
     for i, team in enumerate(lg.standings(), start=1):
         gp = team.wins + team.losses + team.ties
+        rank = getattr(team, "standing", None) or i
         cur.execute(
             """
             INSERT OR REPLACE INTO standings
             (date_pulled, team_name, rank, wins, losses, ties, pct)
             VALUES (?,?,?,?,?,?,?)
             """,
-            (today, team.team_name, i, team.wins, team.losses, team.ties,
-             round(team.wins / gp, 3) if gp else None),
+            (today, team.team_name, rank, team.wins, team.losses, team.ties,
+             round((team.wins + 0.5 * team.ties) / gp, 3) if gp else None),
         )
         out["standings_rows"] += 1
 
-    # Current matchup
+    # Current matchup. espn_api box_scores expose home_stats/away_stats as
+    # {CAT: {"value": float, "result": "WIN"|"LOSS"|"TIE"|None}}. The old
+    # code read a nonexistent "score" key, so every value landed NULL and
+    # every leader "tied". Two fixes: read "value", and derive the leader
+    # from the home team's "result" (ESPN already accounts for lower-is-
+    # better cats like ERA/WHIP — a raw value compare would invert them).
+    # Component stats (AB, H, OUTS, ER, P_H, P_BB) carry result=None and
+    # are NOT scoring categories; skip them so only the real cats persist.
     try:
         period = lg.current_week
         box = lg.box_scores(matchup_period=period)
@@ -598,13 +609,16 @@ def fetch_fantasy_state(cur, lg, today):
             away = b.away_team.team_name if b.away_team else "BYE"
             hs = getattr(b, "home_stats", {}) or {}
             as_ = getattr(b, "away_stats", {}) or {}
-            cats = set(hs.keys()) | set(as_.keys())
-            for cat in cats:
-                hv = hs.get(cat, {}).get("score") if isinstance(hs.get(cat), dict) else None
-                av = as_.get(cat, {}).get("score") if isinstance(as_.get(cat), dict) else None
-                leader = "tied"
-                if hv is not None and av is not None:
-                    leader = "home" if hv > av else ("away" if av > hv else "tied")
+            for cat in hs:
+                hcell = hs.get(cat) or {}
+                acell = as_.get(cat) or {}
+                hres = hcell.get("result") if isinstance(hcell, dict) else None
+                if hres is None:
+                    continue  # component stat, not a scored category
+                hv = hcell.get("value") if isinstance(hcell, dict) else None
+                av = acell.get("value") if isinstance(acell, dict) else None
+                leader = ("home" if hres == "WIN"
+                          else "away" if hres == "LOSS" else "tied")
                 cur.execute(
                     """
                     INSERT OR REPLACE INTO matchups

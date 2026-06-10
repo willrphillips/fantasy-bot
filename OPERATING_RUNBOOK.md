@@ -49,12 +49,13 @@ Pull first. Carries standings, **live matchup category-by-category**,
 **Season-Long Category Totals + "You rank"**, all 10 rosters, top-50 FAs.
 Verify `_Generated:` < 25h.
 
-- ⚠️ **Do NOT use the db `matchups` table or `category_standings` view for
-  matchup/category state — it is empty (all values NULL).** Use `snapshot.md`.
+- ✅ **db `matchups` + `category_standings` now carry real category state**
+  (fixed 2026-06-05 — values populated, `leader` from ESPN's WIN/LOSS result,
+  only the 11 scored cats). Either source works; `snapshot.md` still fine.
 - ⚠️ **Do NOT compute homemade category ranks.** Use snapshot's *Season-Long
   Category Totals*. A roster-sum proxy badly misranks the team.
-- ⚠️ **Do NOT trust the db `standings.rank`** — it does not match ESPN
-  tiebreakers. Use `snapshot.md` standings.
+- ✅ **db `standings.rank` now matches ESPN** (fixed 2026-06-05 — pinned to
+  ESPN's `team.standing`; `pct` counts ties as half-wins).
 
 ## STEP 2 — Performance data: `fantasy.db` + views + `fantasy_lib`
 
@@ -110,13 +111,13 @@ that's unavailable, write **"need to verify [X] live before recommending."**
 ## KNOWN BREAKAGE (verified June 2026)
 
 **Pipeline / database**
-1. **`matchups` table is empty** — all rows `leader='tied'`, `home_value`/
-   `away_value` NULL. System 2 never captures matchup category state.
-   `category_standings.md`'s "Current Matchup" section is broken as a result.
-   `snapshot.md` (System 1) DOES carry it → the two pipelines diverge.
-2. **db `standings.rank` ≠ ESPN standings** — db ranks the .515 cluster by raw
-   pct/wins (different leader + different seed order than ESPN's tiebreakers).
-   db put Captain Phillips #6; ESPN/snapshot has #7. Use snapshot.
+1. ✅ **FIXED 2026-06-05 — `matchups` table now populated.** Was empty (all
+   `leader='tied'`, values NULL) because the ingest read a nonexistent `score`
+   key; espn_api uses `value` + `result`. Now reads `value`, sets `leader` from
+   the home `result` (handles lower-is-better ERA/WHIP), and skips the 6
+   component stats (AB/H/OUTS/ER/P_H/P_BB) that aren't scored cats.
+2. ✅ **FIXED 2026-06-05 — db `standings.rank` matches ESPN.** Rank pinned to
+   ESPN's authoritative `team.standing`; `pct` counts ties as half a win.
 3. **Statcast series starts 2026-05-21** (earlier rows absent/deleted).
 4. **13 untracked FAs** (no 2026 games): Cole, Burnes, Bieber, Musgrove, Steele,
    Hader, Profar, Greene, Jones, Schwellenbach, Pepiot, Westburg, Teel.

@@ -4,6 +4,44 @@ Dated status log for the fantasy-bot data pipeline (the iMac MLB
 ingest + publish system). The pre-existing `espn_nightly_moves`,
 `league_snapshot`, and `espn_weekly_report` jobs are out of scope.
 
+> **STATUS: COMPLETE & LIVE (2026-06-05).** Nightly cron runs
+> ingest → views → anomaly digest → publish → health check on the iMac;
+> `fantasy.db` + 8 markdown views publish to GitHub Pages each morning
+> and return 200. All known data-correctness defects are fixed and
+> verified against live ESPN (see entries below). No open work items.
+> Future changes must respect the locked decisions recorded here and in
+> `CLAUDE.md`.
+
+## 2026-06-05 — matchups + standings defects fixed (the two that "stood")
+
+The two data-correctness defects flagged on 2026-06-04 are now fixed in
+`mlb_ingest.py` `fetch_fantasy_state`, verified against live ESPN.
+
+- **`matchups` table populated.** Root cause: the box-score parser read
+  a nonexistent `score` key, so every `home_value`/`away_value` landed
+  NULL and every `leader` defaulted to `'tied'`. espn_api exposes
+  `home_stats`/`away_stats` as `{CAT: {"value": float, "result":
+  "WIN"|"LOSS"|"TIE"|None}}`. Fix: read `value`; derive `leader` from
+  the home team's `result` (this correctly handles lower-is-better cats
+  like ERA/WHIP — a raw value compare would invert them); and **skip the
+  6 component stats** (AB, H, OUTS, ER, P_H, P_BB) which carry
+  `result=None` and are not scored categories. 11 scored cats × 5
+  matchups = 55 rows/day. Verified: values present, leaders correct.
+- **`standings.rank` matches ESPN.** rank is now pinned to ESPN's
+  authoritative `team.standing` (not the loop index), and `pct` counts
+  ties as half a win `(wins + 0.5*ties)/gp` — matching ESPN's H2H
+  category win%. Verified: CP rank 6, pct .520 (was .465 ignoring ties).
+- **One-time scrub.** The morning's buggy nightly had already written 30
+  stale NULL component-cat rows for 2026-06-05; deleted them
+  (`DELETE FROM matchups WHERE date_pulled=MAX AND home_value IS NULL`)
+  and republished. Future nightlies are clean by construction.
+- **Diagnostic-first.** Wrote a throwaway `_diag_espn.py` to print the
+  real espn_api `box_scores`/standings shapes before editing — fixed
+  against ground truth, not a guess. Removed after.
+- **Locked decision:** matchup `leader` derives from ESPN's `result`
+  field, not a value comparison. Don't revert to value-compare; it
+  silently inverts ratio categories.
+
 ## 2026-06-04 — finalize: anomaly digest, repo cleanup, heartbeat confirmed
 
 Ingest/publish confirmed live: nightly pull 21 (2026-06-04, mode
@@ -11,13 +49,12 @@ nightly, 0 errors, 14.4 min), db + views published to GitHub Pages at
 09:01 GMT, public URLs return 200. NOTE — "0 errors" means the run
 finalized; it does not mean every derived table is correct.
 `OPERATING_RUNBOOK.md` (added in parallel work) records two real
-data-correctness defects that stand: the `matchups` table is empty
-(all `leader='tied'`, values NULL — `category_standings.md`'s matchup
-section is unreliable; use `snapshot.md`), and `standings.rank` does
-not match ESPN's tiebreakers. Both predate this session and are
-out of scope here; flagged so the "live" claim isn't read as
-"everything correct." The stat / window / waiver / anomaly paths are
-sound. Three finishing items completed.
+data-correctness defects that, as of this entry, still stood: the
+`matchups` table was empty (all `leader='tied'`, values NULL) and
+`standings.rank` did not match ESPN's tiebreakers. **Both were fixed the
+next day — see the 2026-06-05 entry above.** Flagged here so the "live"
+claim wasn't read as "everything correct." The stat / window / waiver /
+anomaly paths were already sound. Three finishing items completed.
 
 - **Anomaly digest added (`anomaly.py`).** Builds an 8th view,
   `anomaly_digest.md` — the standout single-game hitting and pitching

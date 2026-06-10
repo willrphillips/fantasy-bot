@@ -534,10 +534,12 @@ This is GitHub Pages, not raw.githubusercontent.com. Pages serves the same `snap
 
 Each view has a `_Generated:` header with the snapshot date — cite it.
 
-**Known data caveats:** the `matchups` table is empty, so the "current
-matchup" section of `category_standings.md` is unreliable; and db
-`standings.rank` does not match ESPN tiebreakers. Use `snapshot.md`
-(league_snapshot pipeline) for live matchup state and true standings.
+**Data notes (fixed 2026-06-05):** the `matchups` table and
+`standings.rank` are now correct. `category_standings.md` carries real
+category-by-category matchup state (the 11 scored cats; `leader` from
+ESPN's WIN/LOSS result, so ratio cats like ERA/WHIP are right) and rank
+matches ESPN (pct counts ties as half-wins). `snapshot.md`
+(league_snapshot pipeline) is still a fine cross-check.
 
 **For ad-hoc queries against fantasy.db (Claude Chat cannot run SQLite):**
 
