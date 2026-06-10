@@ -26,3 +26,7 @@ venv/
 
 # Build artifacts
 files.zip
+
+# Roster-automation runtime state (iMac-local; live queue is pending_moves.json)
+.applied_moves
+applied_log.jsonl

@@ -3,27 +3,18 @@
 
 Runs on the iMac ("Cocky-Claude"), where ESPN is reachable and config.json
 holds the espn_s2 / swid cookies. It CANNOT run from Claude Code on the web —
-that environment can't reach ESPN. See the workflow note at the bottom.
+that environment can't reach ESPN.
 
 An approved proposal = a list of desired STARTERS (your 9 hitters + the
-pitchers you want active). This script seats each starter in a slot they are
-ELIGIBLE for (bipartite matching against ESPN's eligibleSlots), benches
-everyone else, and submits the changes in ONE atomic ESPN transaction. If a
-starter can't be legally seated, it ABORTS and names them — it never makes an
-illegal move.
+pitchers you want active). compute_moves() seats each starter in a slot they
+are ELIGIBLE for (bipartite matching against ESPN's eligibleSlots), benches
+everyone else, and returns the minimal set of moves. If a starter can't be
+legally seated it returns an error instead — it never makes an illegal move.
 
 Usage:
   python3 set_lineup.py --starters starters.json            # dry run (default)
   python3 set_lineup.py --starters starters.json --apply    # actually submit
   python3 set_lineup.py --example                           # print a template
-
-starters.json:
-  {"starters": ["Shea Langeliers","Freddie Freeman","Casey Schmitt","Max Muncy",
-                "Kevin McGonigle","Juan Soto","JJ Bleday","Brandon Marsh",
-                "Willson Contreras","Yoshinobu Yamamoto","Emerson Hancock",
-                "Bryce Elder","Trey Yesavage","Braxton Ashcraft","Gregory Soto",
-                "Ben Brown"]}
-Anyone on the roster and not on IL who isn't listed goes to the bench.
 """
 from __future__ import annotations
 import argparse, json, sys
@@ -82,6 +73,50 @@ def resolve(name: str, roster: list[dict]) -> dict | None:
     return hits[0] if len(hits) == 1 else None
 
 
+def compute_moves(roster: list[dict], starter_names: list[str]):
+    """Return (moves, error). Eligibility-safe; error is a string or None."""
+    starters, missing = [], []
+    for n in starter_names:
+        p = resolve(n, roster)
+        (starters.append(p) if p else missing.append(n))
+    if missing:
+        return None, f"Not on roster (or ambiguous): {', '.join(missing)}"
+
+    il = [p for p in starters if p["on_il"]]
+    if il:
+        return None, f"Can't start IL players: {', '.join(p['name'] for p in il)}"
+
+    hitters  = [p for p in starters if not is_pitcher(p)]
+    pitchers = [p for p in starters if is_pitcher(p)]
+    if len(hitters) > len(HITTER_SLOTS):
+        return None, f"{len(hitters)} hitters named; only {len(HITTER_SLOTS)} hitter slots."
+    if len(pitchers) > len(PITCHER_SLOTS):
+        return None, f"{len(pitchers)} pitchers named; only {len(PITCHER_SLOTS)} P slots."
+
+    h_assign = match(hitters, HITTER_SLOTS, hitter_can_fill)
+    if h_assign is None:
+        return None, ("Can't seat all hitters within their eligible positions. "
+                      "Check your 9 cover C/1B/2B/3B/SS/3×OF/UTIL.")
+    p_assign = match(pitchers, PITCHER_SLOTS, lambda e, s: True)  # any P slot
+
+    target: dict[int, int] = {}
+    for i, slot in h_assign.items():
+        target[hitters[i]["player_id"]] = slot
+    for i, slot in p_assign.items():
+        target[pitchers[i]["player_id"]] = slot
+    for p in roster:                     # everyone else (non-IL) -> bench
+        if p["player_id"] not in target and not p["on_il"]:
+            target[p["player_id"]] = eu.BENCH_SLOT
+
+    moves = [
+        {"player_id": p["player_id"], "name": p["name"],
+         "from_slot": p["slot"], "to_slot": target[p["player_id"]]}
+        for p in roster
+        if p["player_id"] in target and p["slot"] != target[p["player_id"]]
+    ]
+    return moves, None
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Set the ESPN lineup, eligibility-safe.")
     ap.add_argument("--starters", help="JSON file with a 'starters' list")
@@ -113,51 +148,10 @@ def main() -> int:
         return 1
     roster = eu.parse_roster(my_team)
 
-    # resolve names -> roster players
-    starters, missing = [], []
-    for n in want_names:
-        p = resolve(n, roster)
-        (starters.append(p) if p else missing.append(n))
-    if missing:
-        eu.log(f"❌ Not on your roster (or ambiguous): {', '.join(missing)}")
+    moves, err = compute_moves(roster, want_names)
+    if err:
+        eu.log("❌ " + err)
         return 1
-
-    on_il = [p for p in starters if p["on_il"]]
-    if on_il:
-        eu.log(f"❌ Can't start IL players: {', '.join(p['name'] for p in on_il)}")
-        return 1
-
-    hitters = [p for p in starters if not is_pitcher(p)]
-    pitchers = [p for p in starters if is_pitcher(p)]
-    if len(hitters) > len(HITTER_SLOTS):
-        eu.log(f"❌ {len(hitters)} hitters named; only {len(HITTER_SLOTS)} hitter slots.")
-        return 1
-    if len(pitchers) > len(PITCHER_SLOTS):
-        eu.log(f"❌ {len(pitchers)} pitchers named; only {len(PITCHER_SLOTS)} P slots.")
-        return 1
-
-    h_assign = match(hitters, HITTER_SLOTS, hitter_can_fill)
-    if h_assign is None:
-        eu.log("❌ Can't seat all hitters within their eligible positions. "
-               "Check that your 9 cover C/1B/2B/3B/SS/3×OF/UTIL.")
-        return 1
-    p_assign = match(pitchers, PITCHER_SLOTS, lambda e, s: True)  # any P slot
-
-    target: dict[int, int] = {}          # player_id -> target slot
-    for i, slot in h_assign.items():
-        target[hitters[i]["player_id"]] = slot
-    for i, slot in p_assign.items():
-        target[pitchers[i]["player_id"]] = slot
-    for p in roster:                     # everyone else (non-IL) -> bench
-        if p["player_id"] not in target and not p["on_il"]:
-            target[p["player_id"]] = eu.BENCH_SLOT
-
-    moves = [
-        {"player_id": p["player_id"], "name": p["name"],
-         "from_slot": p["slot"], "to_slot": target[p["player_id"]]}
-        for p in roster
-        if p["player_id"] in target and p["slot"] != target[p["player_id"]]
-    ]
 
     eu.log(f"Lineup for scoringPeriod {sp} — {'APPLY' if args.apply else 'DRY RUN'}:")
     ok = eu.apply_lineup_moves(cookies, sp, moves, dry_run=not args.apply)
