@@ -189,6 +189,91 @@ def move_player(cookies: dict, scoring_period: int,
         log(f"  ❌ Failed to move {player_name}: HTTP {resp.status_code}")
         return False
 
+def apply_lineup_moves(cookies: dict, scoring_period: int,
+                       moves: list[dict], dry_run: bool = False) -> bool:
+    """Apply a set of lineup slot changes in ONE atomic transaction.
+
+    moves: list of {player_id, name, from_slot, to_slot}. ESPN validates the
+    END state, so submitting every swap together avoids the 'slot occupied'
+    errors you hit moving players one at a time.
+    """
+    moves = [m for m in moves if m["from_slot"] != m["to_slot"]]
+    if not moves:
+        log("  No lineup changes needed — already optimal.")
+        return True
+    for m in moves:
+        log(f"  {'[DRY RUN] ' if dry_run else ''}{m['name']}: "
+            f"{SLOT_NAMES.get(m['from_slot'], m['from_slot'])} -> "
+            f"{SLOT_NAMES.get(m['to_slot'], m['to_slot'])}")
+    if dry_run:
+        return True
+    payload = {
+        "isKeepersTransaction": False,
+        "scoringPeriodId": scoring_period,
+        "teamId": TEAM_ID,
+        "type": "LINEUP",
+        "items": [
+            {"fromLineupSlotId": m["from_slot"], "toLineupSlotId": m["to_slot"],
+             "playerId": m["player_id"], "type": "LINEUP"}
+            for m in moves
+        ],
+    }
+    resp = requests.post(
+        BASE_URL + "/transactions",
+        cookies=cookies,
+        json=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=15,
+    )
+    if resp.status_code in (200, 201):
+        log(f"  ✅ Applied {len(moves)} lineup move(s).")
+        return True
+    log(f"  ❌ Lineup transaction failed: HTTP {resp.status_code} — {resp.text[:200]}")
+    return False
+
+def waiver_move(cookies: dict, scoring_period: int,
+                add_id: int, add_name: str,
+                drop_id: int, drop_name: str,
+                txn_type: str = "WAIVER", bid: int = 0,
+                dry_run: bool = False) -> bool:
+    """Add a free-agent / waiver player and drop a rostered player atomically.
+
+    txn_type: 'WAIVER' for a rolling-waiver claim (this league has no FAAB, so
+    bid stays 0) or 'FREEAGENT' for an instant add of a player not on waivers.
+    The added player lands on the bench (slot 19); slot him with set_lineup after.
+    """
+    log(f"  {'[DRY RUN] ' if dry_run else ''}ADD {add_name}  /  DROP {drop_name}  ({txn_type})")
+    if dry_run:
+        return True
+    payload = {
+        "bidAmount": bid,
+        "executionType": "EXECUTE",
+        "isActingAsTeamOwner": False,
+        "isLeagueManager": False,
+        "isPending": False,
+        "scoringPeriodId": scoring_period,
+        "teamId": TEAM_ID,
+        "type": txn_type,
+        "items": [
+            {"fromTeamId": 0, "isKeeper": False, "playerId": add_id,
+             "toTeamId": TEAM_ID, "type": "ADD", "toLineupSlotId": BENCH_SLOT},
+            {"fromTeamId": TEAM_ID, "isKeeper": False, "playerId": drop_id,
+             "toTeamId": 0, "type": "DROP"},
+        ],
+    }
+    resp = requests.post(
+        BASE_URL + "/transactions",
+        cookies=cookies,
+        json=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        timeout=15,
+    )
+    if resp.status_code in (200, 201):
+        log(f"  ✅ {txn_type}: added {add_name}, dropped {drop_name}.")
+        return True
+    log(f"  ❌ {txn_type} failed: HTTP {resp.status_code} — {resp.text[:200]}")
+    return False
+
 # ── Email ──────────────────────────────────────────────────────────────────────
 def send_email(cfg: dict, subject: str, body: str):
     smtp_host = cfg.get("smtp_host", "smtp.gmail.com")
