@@ -8,9 +8,53 @@ ingest + publish system). The pre-existing `espn_nightly_moves`,
 > ingest → views → anomaly digest → publish → health check on the iMac;
 > `fantasy.db` + 8 markdown views publish to GitHub Pages each morning
 > and return 200. All known data-correctness defects are fixed and
-> verified against live ESPN (see entries below). No open work items.
+> verified against live ESPN (see entries below).
 > Future changes must respect the locked decisions recorded here and in
 > `CLAUDE.md`.
+>
+> ⚠️ **OPEN WORK ITEM (2026-06-10): ESPN write tooling is UNVALIDATED.**
+> The roster-automation layer (`set_lineup.py`, `waiver_move.py`,
+> `apply_pending.py`, plus `espn_utils.apply_lineup_moves` /
+> `waiver_move`) is written and merged but has **never run against the
+> live ESPN API** — this session's environment couldn't reach ESPN. It
+> must be dry-run-validated, then `--apply`-tested once, on the iMac
+> before any automation is trusted. See the 2026-06-10 entry below.
+
+## 2026-06-10 — ESPN write tooling added (NEEDS LIVE VALIDATION)
+
+Built an opt-in roster-automation layer so an approved proposal can be
+executed on the ESPN team. **Status: code merged to `main`, but NOT yet
+validated against live ESPN.** This is the one open item on the project.
+
+- **What was added.** `espn_utils.apply_lineup_moves()` (atomic multi-slot
+  `LINEUP` transaction) and `espn_utils.waiver_move()` (add/drop in one
+  transaction); `set_lineup.py` (seats approved starters into *eligible*
+  slots via bipartite matching, aborts rather than ever making an illegal
+  move; `compute_moves()` is the reusable planner); `waiver_move.py` (CLI
+  add/drop); `apply_pending.py` (iMac cron executor — reads
+  `pending_moves.json`, runs each approved entry once by `id`, logs to
+  `applied_log.jsonl`, emails a confirmation; `--pull` git-pulls first so
+  an approval committed to the repo flows through hands-off).
+- **Why unvalidated.** This was built from Claude Code on the web (Regime
+  B), which cannot reach `fantasy.espn.com` — the transaction POST payloads
+  are written to ESPN's documented private-API shape but were never
+  executed. The `move_player()` LINEUP payload is the proven reference;
+  the add/drop (`FREEAGENT`/`WAIVER`) payload is the higher-risk unknown.
+- **TO COMPLETE (run on the iMac, Regime A):**
+  1. `python3 set_lineup.py --starters starters.json` (dry run) → confirm
+     the printed moves match intent.
+  2. `python3 set_lineup.py --starters starters.json --apply` → confirm it
+     took in the ESPN app. If HTTP error, capture `resp.text` and fix the
+     payload in `espn_utils.apply_lineup_moves`.
+  3. Repeat the dry-run → apply cycle for `waiver_move.py` (the add/drop
+     shape is the most likely to need a tweak).
+  4. Only after both succeed: install the `apply_pending.py --pull` cron
+     (every few minutes) and decide the approval-delivery channel
+     (commit `pending_moves.json` to this repo; the iMac pulls it).
+- **Locked decision (write path).** Lineup moves must stay
+  eligibility-safe: never POST a player to a slot they aren't eligible for.
+  `set_lineup.compute_moves` enforces this via matching and returns an
+  error instead of guessing. Don't bypass it.
 
 ## 2026-06-05 — matchups + standings defects fixed (the two that "stood")
 
