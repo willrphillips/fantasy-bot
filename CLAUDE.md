@@ -27,6 +27,30 @@ These apply to every session, both Claude Code and Claude Chat.
 - **Trust the ESPN app for position eligibility,** not the db
   `eligible_pos` strings (combo labels like "2B/SS" mislead).
 
+## Local workflow & syncing (VS Code)
+
+This repo is **`willrphillips/fantasy-bot`** on GitHub. The local working
+copy is a folder that may be named **`mlbstats`** — same project, just a
+different local name; its git remote points at `fantasy-bot`
+(run `git remote -v` to confirm). Editing in VS Code and pushing updates
+the GitHub repo; pulling brings GitHub's changes down. The folder and the
+repo are two ends of one pipe, not two projects.
+
+To **pull the latest** (e.g., after work was merged on GitHub):
+
+```bash
+git status                 # check for local edits first
+git stash                  # ONLY if status shows uncommitted changes (CLAUDE.md often is)
+git pull origin main
+git stash pop              # only if you stashed; resolve any conflict it reports
+```
+
+If you just want GitHub's version and don't care about local edits:
+`git fetch origin && git reset --hard origin/main` (discards local changes).
+
+The published-data repo (`willrphillips/fantasy-snapshots`) is **separate**
+and is never pulled here — it only receives `db_publish.py` output.
+
 ## What this is
 
 A data layer for ESPN fantasy baseball. The iMac "Cocky-Claude" pulls

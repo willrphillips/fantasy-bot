@@ -127,6 +127,26 @@ FANTASY_DB=$(pwd)/data/fantasy.db python3
 `fantasy_lib.py` honors `FANTASY_DB` env var so it works against the downloaded
 copy without modification.
 
+## Syncing your local copy (VS Code)
+
+This code repo is **`willrphillips/fantasy-bot`**. Your local working copy may
+be a folder named **`mlbstats`** — same project, different local name. Confirm
+with `git remote -v` (it should show `fantasy-bot.git`). Edit in VS Code → push;
+work merged on GitHub → pull.
+
+```bash
+git status                 # check for local edits first
+git stash                  # only if there are uncommitted changes (CLAUDE.md often is)
+git pull origin main       # bring down the latest
+git stash pop              # only if you stashed; resolve any conflict
+```
+
+To force-match GitHub and discard local edits:
+`git fetch origin && git reset --hard origin/main`.
+
+The data repo (`willrphillips/fantasy-snapshots`) is separate — `db_publish.py`
+pushes to it; you don't pull it into this repo.
+
 ## Manual operations
 
 ```bash
