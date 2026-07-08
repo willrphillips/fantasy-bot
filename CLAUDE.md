@@ -237,3 +237,8 @@ Views:
    re-init (`python3 db_init.py`), and re-run a backfill. The
    `id_map` and `players` tables rebuild from the MLB index on the
    next ingest.
+
+
+## File location rule
+
+Save all files inside this project folder (this directory or its subfolders). Do NOT save to Downloads, `C:\Users\willr\`, or any location outside this project. If saving elsewhere is truly required, STOP and confirm with Will first that it is the best choice for the job.
