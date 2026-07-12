@@ -23,29 +23,29 @@ CATS = ["AVG","R","HR","RBI","SB","K","W","SV","HLD","ERA","WHIP"]
 LOWER_BETTER = {"ERA","WHIP"}
 COUNTING = {"R","HR","RBI","SB","K","W","SV","HLD"}
 RATE_SIGMA = {"AVG":0.022,"ERA":1.10,"WHIP":0.15}   # weekly team-level sd
-WEEKS_PLAYED = 9            # standings sum 99 = 9*11
-REMAINING_REG = 13         # periods 10..22 (assumption; robust +-2)
+WEEKS_PLAYED = 14           # standings sum 154 = 14*11
+REMAINING_REG = 7          # periods 15..21 (21-week reg season)
 N = 6000
 
 # --- snapshot.md: Season-Long Category Totals (update on refresh) ---
 T = {
-"Bay County":      [0.267,339,99,320,38,281,17,46,20,3.93,1.28],
-"Sh'Dynasty":      [0.250,305,97,279,64,527,30,33, 3,3.14,1.11],
-"Fellowship":      [0.239,301,79,267,61,538,36,23,14,3.43,1.07],
-"Brian's":         [0.278,313,86,295,38,469,24,12, 1,3.34,1.25],
-"Ellz Bellz":      [0.252,310,88,314,57,497,30,11, 3,4.02,1.26],
-"Southside":       [0.230,238,67,242,59,601,39,29,17,3.81,1.23],
-"Captain Phillips":[0.251,301,77,254,40,461,31, 8,11,3.56,1.16],
-"EL TORNADO":      [0.257,278,76,265,40,306,18,17, 0,3.92,1.23],
-"Antonio's":       [0.241,274,80,261,38,366,21,12,15,3.67,1.17],
-"Pete's":          [0.253,224,57,191,35,234,12, 7, 1,4.15,1.14],
+"Bay County":      [0.266,521,161,498,68,440,23,76,34,3.87,1.24],
+"Sh'Dynasty":      [0.253,479,156,454,87,803,44,49, 4,3.05,1.11],
+"Fellowship":      [0.241,460,131,426,81,872,54,42,20,3.56,1.11],
+"Brian's":         [0.269,476,137,449,55,727,42,17, 1,3.70,1.25],
+"Ellz Bellz":      [0.260,492,140,485,76,748,46,32, 3,3.85,1.22],
+"Southside":       [0.231,404,119,396,95,947,57,41,25,4.03,1.25],
+"Captain Phillips":[0.250,463,135,417,55,639,46,11,13,4.00,1.19],
+"EL TORNADO":      [0.255,452,121,417,64,476,28,25, 0,3.96,1.27],
+"Antonio's":       [0.254,420,126,404,56,552,36,18,19,3.49,1.15],
+"Pete's":          [0.249,342, 82,289,58,384,20,21, 1,3.74,1.16],
 }
 # current cumulative category record (W,L,T) from snapshot standings
 REC = {
-"Bay County":(51,42,6),"Sh'Dynasty":(51,42,6),"Fellowship":(51,43,5),
-"Brian's":(51,37,11),"Ellz Bellz":(51,37,11),"Southside":(46,48,5),
-"Captain Phillips":(46,42,11),"EL TORNADO":(40,49,10),"Antonio's":(39,53,7),
-"Pete's":(26,59,14),
+"Bay County":(88,56,10),"Sh'Dynasty":(74,67,13),"Fellowship":(74,67,13),
+"Brian's":(74,62,18),"Ellz Bellz":(77,57,20),"Southside":(77,63,14),
+"Captain Phillips":(61,77,16),"EL TORNADO":(64,74,16),"Antonio's":(58,85,11),
+"Pete's":(47,86,21),
 }
 TEAMS = list(T.keys())
 
@@ -129,10 +129,11 @@ base = {t: weekly_params(T[t]) for t in TEAMS}
 
 SCENARIOS = {
     "BASELINE (current roster)":   base,
-    "+Marsh (bench AVG/R)":        cp_variant(AVG=0.004, R=1.0, RBI=0.4, HR=0.1),
-    "+Aranda (bench RBI/HR)":      cp_variant(AVG=0.001, R=0.6, RBI=1.1, HR=0.45),
-    "TRADE: SP -> mid-order bat":  cp_variant(HR=2.0, RBI=3.5, R=2.0, AVG=0.003, W=-0.5, K=-6),
-    "TRADE: 2-for-2 elite bat":    cp_variant(HR=3.0, RBI=5.0, R=3.0, AVG=0.005, W=-0.4, K=-5),
+    "Lineup fix (Teoscar active)": cp_variant(AVG=0.001, R=0.5, RBI=0.7, HR=0.3),
+    "+Aranda 1B (AVG/RBI, for Ctreras)": cp_variant(AVG=0.004, R=0.6, RBI=1.1, HR=0.35),
+    "+setup HLD arms (Whitlock/Morejon)": cp_variant(HLD=1.5, K=2.0, W=0.1, ERA=-0.12, WHIP=-0.03),
+    "+ratio SP (drop Elder->Mize/Rogers)": cp_variant(K=1.0, W=0.1, ERA=-0.20, WHIP=-0.04),
+    "ALL BARONBALL MOVES stacked":  cp_variant(AVG=0.004, R=1.0, RBI=1.6, HR=0.6, HLD=1.5, K=3.0, W=0.2, ERA=-0.30, WHIP=-0.07),
 }
 
 if __name__ == "__main__":
