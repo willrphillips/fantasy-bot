@@ -243,8 +243,11 @@ def _hitter_can_fill(elig: list[int], slot: int) -> bool:
     return g in elig
 
 
-def _match(starters: list[dict], slots: list[int], can_fill) -> dict | None:
+def _match(starters: list[dict], slots: list[int], can_fill,
+           indices: list[int] | None = None) -> dict | None:
     """Kuhn's bipartite matching. Returns {starter_index: slot_id} or None."""
+    if indices is None:
+        indices = list(range(len(starters)))
     slot_to_starter: dict[int, int] = {}
 
     def try_assign(i: int, seen: set[int]) -> bool:
@@ -256,10 +259,40 @@ def _match(starters: list[dict], slots: list[int], can_fill) -> dict | None:
                     return True
         return False
 
-    for i in range(len(starters)):
+    for i in indices:
         if not try_assign(i, set()):
             return None
     return {i: s for s, i in slot_to_starter.items()}
+
+
+def _match_stable(starters: list[dict], slots: list[int], can_fill) -> dict | None:
+    """Match, but leave a starter where he already sits when that is legal.
+
+    A plain matching is free to send a player from OF slot 6 to OF slot 5, or
+    from P slot 13 to P slot 11 — identical in every way that matters, but it
+    still counts as a move and would submit a pointless transaction. So: pin
+    everyone already sitting in an acceptable slot, then match only the rest
+    into what is left. If that pinning makes the remainder unsolvable, fall
+    back to matching from scratch, which is always at least as feasible.
+    """
+    assign: dict[int, int] = {}
+    free = list(slots)
+    for i, p in enumerate(starters):
+        cur = p.get("slot")
+        if cur in free and can_fill(p["eligible"], cur):
+            assign[i] = cur
+            free.remove(cur)
+
+    rest = [i for i in range(len(starters)) if i not in assign]
+    if not rest:
+        return assign
+
+    partial = _match(starters, free, can_fill, indices=rest)
+    if partial is not None:
+        assign.update(partial)
+        return assign
+
+    return _match(starters, slots, can_fill)      # pinning boxed us in — redo
 
 
 def compute_moves(roster: list[dict], starter_names: list[str],
@@ -291,11 +324,11 @@ def compute_moves(roster: list[dict], starter_names: list[str],
     if len(pitchers) > len(pitcher_slots):
         return None, f"{len(pitchers)} pitchers named; only {len(pitcher_slots)} P slots."
 
-    h_assign = _match(hitters, hitter_slots, _hitter_can_fill)
+    h_assign = _match_stable(hitters, hitter_slots, _hitter_can_fill)
     if h_assign is None:
         return None, ("Can't seat all hitters within their eligible positions. "
                       "Check your 9 cover C/1B/2B/3B/SS/3xOF/UTIL.")
-    p_assign = _match(pitchers, pitcher_slots, lambda e, s: True)  # any P slot
+    p_assign = _match_stable(pitchers, pitcher_slots, lambda e, s: True)  # any P
     if p_assign is None:
         return None, "Can't seat all pitchers."
 
@@ -308,15 +341,23 @@ def compute_moves(roster: list[dict], starter_names: list[str],
         if p["player_id"] not in target and not p["on_il"]:
             target[p["player_id"]] = BENCH_SLOT
 
-    moves = [
-        {"player_id": p["player_id"], "name": p["name"],
-         "from_slot": p["slot"], "to_slot": target[p["player_id"]],
-         "from_label": SLOT_NAMES.get(p["slot"], str(p["slot"])),
-         "to_label": SLOT_NAMES.get(target[p["player_id"]],
-                                    str(target[p["player_id"]]))}
-        for p in roster
-        if p["player_id"] in target and p["slot"] != target[p["player_id"]]
-    ]
+    moves = []
+    for p in roster:
+        pid = p["player_id"]
+        if pid not in target or p["slot"] == target[pid]:
+            continue
+        from_label = SLOT_NAMES.get(p["slot"], str(p["slot"]))
+        to_label = SLOT_NAMES.get(target[pid], str(target[pid]))
+        # Drop cosmetic churn. espn_api reports lineupSlot as a LABEL, so every
+        # pitcher parses back as slot 11 and every outfielder as slot 5 — the
+        # specific numeric slot is not recoverable. That makes the solver want
+        # to "move" P->P and OF->OF, which ESPN treats as identical. Submitting
+        # those would be a pointless transaction, so drop them.
+        if from_label == to_label:
+            continue
+        moves.append({"player_id": pid, "name": p["name"],
+                      "from_slot": p["slot"], "to_slot": target[pid],
+                      "from_label": from_label, "to_label": to_label})
     return moves, None
 
 
@@ -582,6 +623,67 @@ def _selftest() -> int:
     _, err = compute_moves(roster, names[:11] + ["Nobody At All"])
     if not err or "Not on roster" not in err:
         fails.append("unknown starter was not refused")
+
+    # Stability: a lineup that is already set must produce ZERO moves, even
+    # when players sit in interchangeable slots (OF 5/6/7, P 11/13/14...).
+    seated = [
+        pl(1, "Shea Langeliers", [0, 12], slot=0),
+        pl(2, "Freddie Freeman", [1, 12], slot=1),
+        pl(3, "Casey Schmitt", [2, 4, 12], slot=4),    # 2B/SS man seated at SS
+        pl(4, "Max Muncy", [3, 12], slot=3),
+        pl(5, "Kevin McGonigle", [4, 12], slot=12),    # SS man parked in UTIL
+        pl(6, "Juan Soto", [5, 12], slot=7),           # OF slot 7, not 5
+        pl(7, "JJ Bleday", [5, 12], slot=6),
+        pl(8, "Brandon Marsh", [5, 12], slot=5),
+        pl(9, "Ozzie Albies", [2, 12], slot=2),
+        pl(10, "Yoshinobu Yamamoto", [11], slot=14),   # P slot 14, not 11
+        pl(11, "Bryce Elder", [11], slot=11),
+        pl(12, "Braxton Ashcraft", [11], slot=17),
+    ]
+    moves, err = compute_moves(seated, [p["name"] for p in seated])
+    if err:
+        fails.append(f"already-set lineup rejected: {err}")
+    elif moves:
+        churn = "; ".join(f"{m['name']} {m['from_label']}->{m['to_label']}" for m in moves)
+        fails.append(f"already-set lineup produced {len(moves)} no-op move(s): {churn}")
+
+    # Same, but with slots as ESPN actually reports them: lineupSlot is a label,
+    # so every P collapses to 11 and every OF to 5. This is the live shape that
+    # produced 7 phantom P->P / OF->OF moves before the cosmetic filter.
+    live_shape = [
+        pl(1, "Shea Langeliers", [0, 12], slot=0),
+        pl(2, "Casey Schmitt", [1, 2, 4, 12], slot=1),   # ESPN has him at 1B
+        pl(3, "Ozzie Albies", [2, 12], slot=2),
+        pl(4, "Max Muncy", [3, 12], slot=3),
+        pl(5, "Kevin McGonigle", [4, 12], slot=4),
+        pl(6, "Juan Soto", [5, 12], slot=5),
+        pl(7, "Brandon Marsh", [5, 12], slot=5),       # all OF report slot 5
+        pl(8, "JJ Bleday", [5, 12], slot=5),
+        pl(9, "Freddie Freeman", [1, 12], slot=12),
+        pl(10, "Yoshinobu Yamamoto", [11], slot=11),
+        pl(11, "Emerson Hancock", [11], slot=11),      # all P report slot 11
+        pl(12, "Bryce Elder", [11], slot=11),
+        pl(13, "Braxton Ashcraft", [11], slot=11),
+    ]
+    moves, err = compute_moves(live_shape, [p["name"] for p in live_shape])
+    if err:
+        fails.append(f"live-shape lineup rejected: {err}")
+    elif moves:
+        churn = "; ".join(f"{m['name']} {m['from_label']}->{m['to_label']}" for m in moves)
+        fails.append(f"live-shape lineup produced {len(moves)} no-op move(s): {churn}")
+
+    # A real bench-for-starter swap must still be emitted, not filtered away.
+    swap = live_shape + [pl(14, "Bench Bat", [5, 12], slot=BENCH_SLOT)]
+    want = [p["name"] for p in live_shape if p["name"] != "JJ Bleday"] + ["Bench Bat"]
+    moves, err = compute_moves(swap, want)
+    if err:
+        fails.append(f"bench-swap rejected: {err}")
+    else:
+        by_name = {m["name"]: m for m in moves}
+        if "Bench Bat" not in by_name:
+            fails.append("bench-swap: incoming starter was not moved off the bench")
+        if by_name.get("JJ Bleday", {}).get("to_label") != "BE":
+            fails.append("bench-swap: displaced starter was not benched")
 
     # Three catchers cannot be seated (C, UTIL, then nowhere).
     triple_c = [pl(20, "C One", [0, 12]), pl(21, "C Two", [0, 12]),

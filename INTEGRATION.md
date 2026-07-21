@@ -233,18 +233,47 @@ python3 fantasy_exec.py --league sunday_funday roster
 
 ## 5. Verification status
 
-Be clear about what has and hasn't been proven:
+Tested on the iMac against the live league on **2026-07-21** (Python 3.9.6).
 
-- **Verified:** the eligibility solver, name resolution, refusal cases
-  (IL starter, over-full lineup, unknown name, unseatable roster), and the
-  config resolver — all covered by `selftest`, which passes.
-- **Not yet verified against live ESPN:** every code path that posts a
-  transaction. This module has never been run against ESPN. The transaction
-  payloads are ported unchanged from `espn_utils.py`, which has been used, but
-  the port itself is untested end-to-end.
+**Verified live (read-only calls, nothing submitted):**
 
-So: run steps 3–7 of the checklist before trusting it with a real move. First
-live use should be a dry run, then a single low-stakes add/drop.
+- `whoami()` → `Captain Phillips (team 9, league 2057904545), scoringPeriod 119,
+  21 players`. Cookies authenticate.
+- `get_roster()` → 21 players, matching the ESPN app, IL players flagged.
+- `set_lineup(current starters, dry_run=True)` → `no lineup changes needed —
+  already optimal`. Round-trips name resolution, the solver, and slot mapping.
+- Negative control: a bogus name is refused rather than silently dropped.
+- `selftest` passes, covering the solver, the refusal cases (IL starter,
+  over-full lineup, unknown name, unseatable C/C/C), no-op stability, and a real
+  bench-for-starter swap.
+
+**Still NOT verified:** the actual POST. No transaction has been submitted from
+this module. `add_drop()` and a lineup change with real moves have only ever run
+with `dry_run=True`. The payloads are ported unchanged from `espn_utils.py`
+(which has been used in anger), but the port's write path is unproven.
+
+First real use should be a single low-stakes move with Will watching.
+
+### A limitation worth knowing about
+
+`espn_api` exposes `lineupSlot` as a **label** (`"P"`, `"OF"`), not the numeric
+slot ID. So every pitcher parses back as slot 11 and every outfielder as slot 5 —
+which specific P or OF slot a player occupies is not recoverable.
+
+Consequences:
+
+1. The solver used to emit phantom `P->P` / `OF->OF` moves (7 of them on the
+   live roster). `compute_moves` now drops any move whose from-label equals its
+   to-label, since ESPN treats those slots as identical. That is why the
+   round-trip above returns zero moves.
+2. For a **real** change inside those groups (benching one OF, starting
+   another), the incoming player's computed `toLineupSlotId` may name a slot
+   that a different, unmoved OF actually occupies. ESPN validates the end state
+   of the whole transaction, so this may well be accepted — but it has not been
+   proven. Watch the first live OF or P swap closely.
+
+`set_lineup.py` on the iMac has the same underlying behaviour; it was left
+as-is (see section 6).
 
 ---
 

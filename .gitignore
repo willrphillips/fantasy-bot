@@ -2,6 +2,8 @@
 config.json
 config.json.bak.*
 crontab.bak.*
+ACCESS.local.md
+*.local.md
 
 # Data + logs (data publishes via db_publish.py to fantasy-snapshots repo)
 fantasy.db
