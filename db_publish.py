@@ -23,9 +23,14 @@ import json
 import logging
 import os
 import sqlite3
+import time
 from pathlib import Path
 
 import requests
+
+# HTTP statuses worth retrying (transient GitHub / network hiccups). 409 = sha
+# conflict, handled by refetching the sha on the next attempt.
+_RETRYABLE = {408, 409, 429, 500, 502, 503, 504}
 
 DB_PATH = Path(os.path.expanduser("~/fantasy-bot/fantasy.db"))
 VIEWS_DIR = Path(os.path.expanduser("~/fantasy-bot/public/views"))
@@ -105,30 +110,52 @@ def _check_freshness():
     return latest
 
 
-def commit_file(token, local_path: Path, repo_path: str, message: str):
+def commit_file(token, local_path: Path, repo_path: str, message: str,
+                timeout: int = 30, attempts: int = 4):
     """
     PUT a file to repo at `repo_path`. Binary or text — we base64 either way.
-    Returns True if committed, None if local file missing, False on HTTP error.
+    Retries transient failures (timeouts, 5xx, sha conflicts) with exponential
+    backoff so one network blip on the large fantasy.db doesn't skip the whole
+    push. Returns True if committed, None if local file missing, False if it
+    still fails after `attempts`.
+
+    NB: the db is base64'd into a single JSON body (~1.35x its size). If this
+    ever exceeds GitHub's Contents-API ceiling for good (not just a blip),
+    escalate to gzipping the db or the Git Data (blob) API — retries won't help
+    a hard size rejection.
     """
     if not local_path.exists():
         log.warning(f"missing local file: {local_path}")
         return None
     data = local_path.read_bytes()
     b64 = base64.b64encode(data).decode("ascii")
-    sha = _get_existing_sha(token, repo_path)
-    body = {
-        "message": message,
-        "content": b64,
-        "branch": BRANCH,
-    }
-    if sha:
-        body["sha"] = sha
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}"
-    r = requests.put(url, headers=_gh_headers(token), data=json.dumps(body), timeout=30)
-    if r.status_code in (200, 201):
-        log.info(f"committed {repo_path} ({len(data)} bytes)")
-        return True
-    log.error(f"commit failed {repo_path}: HTTP {r.status_code} {r.text[:200]}")
+
+    delay, last = 3, ""
+    for attempt in range(1, attempts + 1):
+        sha = _get_existing_sha(token, repo_path)      # refetch each try (handles 409)
+        body = {"message": message, "content": b64, "branch": BRANCH}
+        if sha:
+            body["sha"] = sha
+        try:
+            r = requests.put(url, headers=_gh_headers(token),
+                             data=json.dumps(body), timeout=timeout)
+        except requests.RequestException as e:          # timeout / connection reset
+            last = f"{type(e).__name__}: {e}"
+            log.warning(f"{repo_path} attempt {attempt}/{attempts} network error: {last}")
+        else:
+            if r.status_code in (200, 201):
+                log.info(f"committed {repo_path} ({len(data)} bytes) on attempt {attempt}")
+                return True
+            last = f"HTTP {r.status_code} {r.text[:200]}"
+            if r.status_code not in _RETRYABLE:
+                log.error(f"commit failed {repo_path}: {last} (non-retryable)")
+                return False
+            log.warning(f"{repo_path} attempt {attempt}/{attempts}: {last}")
+        if attempt < attempts:
+            time.sleep(delay)
+            delay = min(delay * 2, 30)
+    log.error(f"commit failed {repo_path} after {attempts} attempts: {last}")
     return False
 
 
@@ -160,7 +187,7 @@ def main():
 
     if not args.views_only:
         r = commit_file(token, DB_PATH, "data/fantasy.db",
-                         "nightly: update fantasy.db")
+                         "nightly: update fantasy.db", timeout=120)
         if r is True:
             pushed += 1
         elif r is False:
