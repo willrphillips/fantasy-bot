@@ -8,7 +8,7 @@ from datetime import date
 _DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _DIR)
 
-from espn_utils import send_email, load_config, log
+from espn_utils import send_discord, _discord_url, load_config, log
 
 _STATE_PATH = os.path.join(_DIR, ".alert_state")
 
@@ -29,11 +29,13 @@ def _save_state(state: dict) -> None:
 
 
 def alert(script_name: str, subject: str, body: str) -> bool:
-    """Send failure email. Throttled: one per script per day.
+    """Post a failure alert to Discord. Throttled: one per script per day.
 
-    Returns True if sent. False if throttled or send failed.
-    State is marked only AFTER a successful send so a transient SMTP
-    failure does not burn the daily slot.
+    Email has been retired — alerts go to the Discord "alerts" channel (falling
+    back to the "baseball" webhook, then any default). If no webhook is
+    configured the alert is logged locally only. Returns True if posted, False
+    if throttled, unconfigured, or the post failed. State is marked only AFTER a
+    successful post so a transient failure does not burn the daily slot.
     """
     today = date.today().isoformat()
     state = _load_state()
@@ -44,12 +46,16 @@ def alert(script_name: str, subject: str, body: str) -> bool:
 
     try:
         cfg = load_config()
-        send_email(cfg, subject, body)
+        channel = "alerts" if _discord_url(cfg, "alerts") else "baseball"
+        if not _discord_url(cfg, channel):
+            log(f"[notify] No Discord webhook configured — '{subject}' logged only")
+            return False
+        send_discord(cfg, f"**[{script_name}] {subject}**\n{body}", channel=channel)
     except Exception as e:
-        log(f"[notify] FAILED to send alert for '{script_name}': {e}")
+        log(f"[notify] FAILED to post alert for '{script_name}': {e}")
         return False
 
     state[script_name] = today
     _save_state(state)
-    log(f"[notify] Alert sent for '{script_name}': {subject}")
+    log(f"[notify] Alert posted for '{script_name}': {subject}")
     return True
