@@ -8,11 +8,19 @@ from). Sits deliberately AFTER the 03:30 MLB/ESPN ingest so the database is same
 
 What it does: rebuilds the analysis views, reads the LIVE ESPN roster (authoritative — waiver
 claims process overnight, so the database's roster can be a few hours behind), folds the lot into
-exactly ONE `claude -p` call, and posts a short butler-voiced brief to #baseball-fantasy naming
-concrete moves worth making today.
+exactly ONE `claude -p` call, EXECUTES the moves that call decides on, and posts a short
+butler-voiced brief to #baseball-fantasy saying what was done and why.
 
-What it does NOT do: touch the roster. Submitting a lineup change, add, drop or claim to ESPN is a
-standing gate that needs Will present and saying yes, every time. This job proposes; he disposes.
+Will lifted the approval gate on roster moves on 2026-07-21: lineup changes, adds, drops and
+waiver claims this job now makes outright and reports after. Two things it must never do from
+here, both still gated on Will saying yes in person: propose a TRADE (it lands in another
+manager's lap) and spend money. There is no trade path in this file, deliberately.
+
+Alongside the prose the model emits a fenced ```moves JSON block, which is parsed, stripped from
+the brief, capped at MAX_MOVES, and run through fantasy_exec. Adds go first, then one single
+set_lineup call for the seating, since ESPN validates the whole end state at once. Every outcome,
+success or failure, is appended to the posted brief — a move that silently fails is worse than one
+never attempted.
 
 Mirrors tools/email_rundown.py in the edwin repo in shape (one cheap LLM call, deterministic
 fallback, chunked Discord post) so the scheduled jobs all behave the same way.
@@ -23,9 +31,12 @@ Config (env):
   FANTASY_ADVISOR_TZ         IANA tz for the heading date (default America/New_York)
   FANTASY_INGEST_WAIT        max minutes to wait for a still-running ingest (default 30)
   CLAUDE_BIN / CLAUDE_FLAGS / CLAUDE_TIMEOUT
-  FANTASY_ADVISOR_DRY_RUN=1  build + call Claude, print the brief, but do NOT post
+  FANTASY_ADVISOR_DRY_RUN=1  build + call Claude, print the brief, but do NOT post or execute
+  FANTASY_ADVISOR_EXECUTE=0  the kill switch: write the brief as a proposal only, submit nothing
+  FANTASY_ADVISOR_MAX_MOVES  cap on moves executed in one morning (default 3)
 """
 import os
+import re
 import sys
 import glob
 import json
@@ -79,6 +90,8 @@ INGEST_WAIT_MIN = int((os.getenv("FANTASY_INGEST_WAIT") or "30").strip() or "30"
 CLAUDE_FLAGS = shlex.split(os.getenv("CLAUDE_FLAGS") or "")
 CLAUDE_TIMEOUT = int((os.getenv("CLAUDE_TIMEOUT") or "420").strip() or "420")
 DRY_RUN = (os.getenv("FANTASY_ADVISOR_DRY_RUN") or "").strip() in ("1", "true", "yes")
+EXECUTE = (os.getenv("FANTASY_ADVISOR_EXECUTE") or "1").strip() not in ("0", "false", "no")
+MAX_MOVES = int((os.getenv("FANTASY_ADVISOR_MAX_MOVES") or "3").strip() or "3")
 
 DISCORD_API = "https://discord.com/api/v10"
 UA = "EdwinFantasyAdvisor (https://github.com/edwin, 1.0)"
@@ -233,24 +246,51 @@ LIVE ESPN ROSTER (authoritative, read minutes ago):
 ANALYSIS VIEWS (built from the database, stats current through {latest}):
 {views_text}
 
+Will has lifted the approval gate on roster moves. Whatever you decide below WILL BE SUBMITTED to
+ESPN automatically, minutes from now, while he sleeps. Write as a man reporting what he has done,
+not one asking leave. You may not propose a trade and you may not spend money; those two still
+wait on him.
+
 Write the brief. Rules, all binding:
 - Open with a one-line verdict: is there anything worth doing today, or is the roster right as it
   stands? Say "Nothing worth changing this morning, sir" and stop if that is the honest answer. A
-  quiet day is a perfectly good brief; never manufacture a move to look busy.
-- Then at most THREE concrete proposals, each one sentence or two: the exact move (start X over Y,
-  drop A for B) and the single number that justifies it. Name real players from the data above.
+  quiet day is a perfectly good brief; never manufacture a move to look busy. You are acting
+  unsupervised, so the bar for touching the roster is a clear improvement, not a marginal one.
+- Then at most THREE moves, each one sentence or two: the exact move (start X over Y, drop A for
+  B) and the single number that justifies it. Name real players from the data above.
 - Check the obvious things: an empty active slot, a starter who is slumping badly with a better bat
   on the bench, an arm with a wretched last-fortnight line, a free agent clearly better than your
-  worst rostered player. An unfilled pitching slot is free innings not collected — flag it.
+  worst rostered player. An unfilled pitching slot is free innings not collected — fill it.
 - Roster is capped, so any add requires a drop. Always name both sides.
-- Close with one line: nothing has been submitted, and say the word to execute.
-- If you open by saying how many proposals there are, the count must match what follows exactly.
+- Never drop a player who is on the IL, and never drop one of the team's genuinely best assets to
+  chase a marginal upgrade.
+- Close with one line saying the moves are done and he can reverse any of them.
+- If you open by saying how many moves there are, the count must match what follows exactly.
 - Voice: Alfred Pennyworth. Curt, dry, understated, full sentences, no em dashes, no exclamation
   marks, no bullet-point report formatting, no bold labels, no enthusiasm. "Sir" at most once.
 - Never announce candour. Phrases like "the honest fix", "to be honest", "frankly", "in fairness",
   "worth noting" are banned outright. State the thing; do not flag that you are about to.
 - Under 250 words. Plain prose. Discord-friendly.
-Output only the brief itself. No preamble, no timestamp line, no heading, no sign-off."""
+
+After the brief, and ONLY if you named moves, append a fenced code block tagged `moves` holding a
+JSON array of the same moves in machine form, in the order they should run. Nothing after it.
+
+```moves
+[
+  {{"type": "add_drop", "add": "Free Agent Name", "drop": "Rostered Name", "txn": "FREEAGENT"}},
+  {{"type": "start", "start": "Player To Seat", "bench": "Player To Sit"}}
+]
+```
+
+The JSON is binding and must match the prose exactly: every move you describe appears once, and no
+move appears that you did not describe. Names must be spelled as they appear on the roster or in
+the waiver views. Use "txn": "WAIVER" if the player is on waivers, "FREEAGENT" if he is freely
+available; when unsure use "WAIVER". A player you add lands on the bench, so if he is meant to
+start, follow the add_drop with a "start" move seating him. Only these two move types exist. If
+there is nothing to do, write no block at all.
+
+Output only the brief and, if applicable, that one block. No preamble, no timestamp line, no
+heading, no sign-off."""
 
 
 def call_claude(prompt):
@@ -279,6 +319,118 @@ def tidy(text):
     while lines and (not lines[0].strip() or (lines[0].strip().startswith("[") and lines[0].strip().endswith("]"))):
         lines.pop(0)
     return "\n".join(lines).strip()
+
+
+MOVES_BLOCK = re.compile(r"```(?:moves|json)?\s*\n(\[.*?\])\s*\n?```", re.DOTALL)
+
+
+def split_moves(text):
+    """Pull the machine-readable moves block out of the brief and return (prose, moves).
+
+    The block is stripped from the prose either way: Will reads the sentences, not the JSON. A
+    malformed block yields no moves, which fails safe — the brief still posts, nothing is
+    submitted, and the log carries the reason."""
+    text = text or ""
+    m = MOVES_BLOCK.search(text)
+    if not m:
+        return text.strip(), []
+    prose = (text[:m.start()] + text[m.end():]).strip()
+    try:
+        moves = json.loads(m.group(1))
+    except Exception as e:
+        log.error("moves block did not parse as JSON: %s", e)
+        return prose, []
+    if not isinstance(moves, list):
+        log.error("moves block was %s, not a list", type(moves).__name__)
+        return prose, []
+    clean = []
+    for mv in moves:
+        if not isinstance(mv, dict):
+            continue
+        kind = (mv.get("type") or "").strip().lower()
+        if kind == "add_drop" and mv.get("add") and mv.get("drop"):
+            txn = (mv.get("txn") or "WAIVER").strip().upper()
+            clean.append({"type": "add_drop", "add": str(mv["add"]).strip(),
+                          "drop": str(mv["drop"]).strip(),
+                          "txn": txn if txn in ("WAIVER", "FREEAGENT") else "WAIVER"})
+        elif kind == "start" and mv.get("start") and mv.get("bench"):
+            clean.append({"type": "start", "start": str(mv["start"]).strip(),
+                          "bench": str(mv["bench"]).strip()})
+        else:
+            log.warning("discarding unusable move: %r", mv)
+    if len(clean) > MAX_MOVES:
+        log.warning("model returned %s moves, capping at %s", len(clean), MAX_MOVES)
+        clean = clean[:MAX_MOVES]
+    return prose, clean
+
+
+def execute_moves(moves):
+    """Submit the moves to ESPN and return one report line per move.
+
+    Adds run first and individually, since each is its own ESPN transaction. The seating is then
+    done in ONE set_lineup call off a freshly-read roster, because set_lineup takes the complete
+    intended starting nine-plus-seven and benches everyone else — feeding it a partial list would
+    quietly bench the rest of the team."""
+    lines = []
+    try:
+        import fantasy_exec as fe
+    except Exception as e:
+        log.error("fantasy_exec unavailable: %s", e)
+        return [f"Could not reach the roster tooling ({e}); nothing was submitted."]
+
+    for mv in [m for m in moves if m["type"] == "add_drop"]:
+        try:
+            res = fe.add_drop(mv["add"], mv["drop"], txn_type=mv["txn"])
+        except Exception as e:                      # noqa: BLE001
+            log.error("add_drop raised: %s", e)
+            lines.append(f"Failed to add {mv['add']} for {mv['drop']}: {e}")
+            continue
+        if res.get("ok"):
+            claim = " (waiver claim, processes overnight)" if mv["txn"] == "WAIVER" else ""
+            lines.append(f"Added {mv['add']}, dropped {mv['drop']}{claim}.")
+        else:
+            lines.append(f"Failed to add {mv['add']} for {mv['drop']}: "
+                         f"{res.get('error') or res.get('detail')}")
+
+    seats = [m for m in moves if m["type"] == "start"]
+    if not seats:
+        return lines
+
+    roster = live_roster()
+    if not roster:
+        lines.append("Could not re-read the roster, so the lineup was left alone.")
+        return lines
+
+    starters = [p["name"] for p in roster if not p.get("on_bench") and not p.get("on_il")]
+    changed = False
+    for mv in seats:
+        into = fe._resolve_name(mv["start"], roster)
+        out = fe._resolve_name(mv["bench"], roster)
+        if not into or not out:
+            missing = mv["start"] if not into else mv["bench"]
+            lines.append(f"Could not seat {mv['start']} over {mv['bench']}: {missing} is not on "
+                         f"the roster.")
+            continue
+        if out["name"] in starters:
+            starters.remove(out["name"])
+        if into["name"] not in starters:
+            starters.append(into["name"])
+        changed = True
+        lines.append(f"Started {into['name']} over {out['name']}.")
+
+    if not changed:
+        return lines
+    try:
+        res = fe.set_lineup(starters)
+    except Exception as e:                          # noqa: BLE001
+        log.error("set_lineup raised: %s", e)
+        lines.append(f"The lineup change did not take: {e}")
+        return lines
+    if not res.get("ok"):
+        # The per-move "Started X over Y" lines above were optimistic; correct them.
+        lines = [ln for ln in lines if not ln.startswith("Started ")]
+        lines.append(f"The lineup change did not take: {res.get('error') or res.get('detail')}")
+    return lines
 
 
 def api_post(path, payload):
@@ -340,6 +492,17 @@ def main():
     if not out:
         out = fallback_note(nice_date, roster, latest)
         log.error("claude gave no output; posting deterministic fallback")
+
+    out, moves = split_moves(out)
+    log.info("brief names %s move(s)", len(moves))
+    if moves and EXECUTE and not DRY_RUN:
+        results = execute_moves(moves)
+        if results:
+            out = out + "\n\n" + "\n".join(results)
+    elif moves:
+        why = "dry run" if DRY_RUN else "execution disabled"
+        log.info("not submitting (%s): %s", why, json.dumps(moves))
+        out = out + f"\n\n(Not submitted — {why}.)\n" + json.dumps(moves, indent=2)
 
     try:
         (VIEWS_DIR / "nightly_advice.md").write_text(
