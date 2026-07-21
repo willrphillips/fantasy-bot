@@ -15,6 +15,7 @@ Public contract (all return a result dict, never raise on ESPN failure):
 
     add_drop(add_name, drop_name, txn_type="WAIVER", dry_run=False, league=None)
     set_lineup(starters, dry_run=False, league=None)
+    propose_trade(send, receive, dry_run=False, to_team=None, league=None)
     get_roster(league=None)
     whoami(league=None)
 
@@ -57,6 +58,7 @@ CLI (for testing — dry run is the default, --apply is required to submit):
     python3 fantasy_exec.py roster
     python3 fantasy_exec.py add-drop --add "Ben Brown" --drop "Landen Roupp"
     python3 fantasy_exec.py lineup --starters starters.json
+    python3 fantasy_exec.py trade --send "Kevin McGonigle" --receive "Kyle Bradish"
     python3 fantasy_exec.py selftest        # offline; no ESPN, no config needed
 """
 from __future__ import annotations
@@ -588,6 +590,124 @@ def set_lineup(starters: list[str], dry_run: bool = False,
                    None if ok else post_err, **extras)
 
 
+def _league_wide_players(lg) -> list[dict]:
+    """Every rostered player in the league, tagged with the team that owns him."""
+    out = []
+    for t in lg.teams:
+        for p in t.roster:
+            out.append({"name": p.name, "player_id": p.playerId,
+                        "position": getattr(p, "position", "") or "",
+                        "team_id": t.team_id, "team_name": t.team_name,
+                        "obj": p})
+    return out
+
+
+def propose_trade(send: list[str], receive: list[str], dry_run: bool = False,
+                  to_team: str | None = None, league: str | None = None,
+                  config_path: str | None = None) -> dict:
+    """Propose a trade: `send` players go out, `receive` players come back.
+
+    The counterparty is inferred from whoever owns the `receive` players — they
+    must all sit on one roster. `to_team` (a team name substring or id) is an
+    optional cross-check; if given and it disagrees with the inferred owner, the
+    trade is refused rather than sent to the wrong manager.
+
+    Sides need not be equal in size, but ESPN rejects a proposal that would leave
+    either roster over its limit, so keep them balanced unless you know better.
+
+    Extras in the result: send_players, receive_players, to_team_id, to_team_name.
+    """
+    action = "propose_trade"
+    if not send or not receive:
+        return _result(action, league or "?", False, dry_run, "incomplete trade",
+                       "both `send` and `receive` need at least one player")
+    try:
+        ctx = resolve_league(load_config(config_path), league)
+    except ConfigError as e:
+        return _result(action, league or "?", False, dry_run, "config error", str(e))
+    try:
+        lg, sp, team, roster = _connect(ctx)
+    except Exception as e:                    # noqa: BLE001
+        return _result(action, ctx.key, False, dry_run,
+                       "could not reach ESPN", str(e))
+
+    mine, theirs = [], []
+    pool = _league_wide_players(lg)
+    for name in send:
+        p = _resolve_name(name, roster)
+        if p is None:
+            return _result(action, ctx.key, False, dry_run, "send target not found",
+                           f"{name!r} is not on your roster (or is ambiguous)")
+        mine.append({"name": p["name"], "player_id": p["player_id"]})
+    for name in receive:
+        p = _resolve_name(name, pool)
+        if p is None:
+            return _result(action, ctx.key, False, dry_run, "receive target not found",
+                           f"no rostered player matching {name!r} (or ambiguous) — "
+                           f"free agents go through add_drop, not a trade")
+        if p["team_id"] == ctx.team_id:
+            return _result(action, ctx.key, False, dry_run, "already yours",
+                           f"{p['name']} is on your own roster")
+        theirs.append(p)
+
+    owners = {p["team_id"] for p in theirs}
+    if len(owners) > 1:
+        names = ", ".join(sorted({f"{p['name']} ({p['team_name']})" for p in theirs}))
+        return _result(action, ctx.key, False, dry_run, "multi-team trade",
+                       f"ESPN trades are between two teams; you asked for {names}")
+    other_id = theirs[0]["team_id"]
+    other_name = theirs[0]["team_name"]
+
+    if to_team:
+        want = str(to_team).strip().lower()
+        if want.isdigit():
+            match = int(want) == other_id
+        else:
+            match = want in other_name.lower()
+        if not match:
+            return _result(action, ctx.key, False, dry_run, "counterparty mismatch",
+                           f"those players belong to {other_name} (team {other_id}), "
+                           f"not {to_team!r} — refusing to send it to the wrong manager")
+
+    out_names = ", ".join(p["name"] for p in mine)
+    in_names = ", ".join(p["name"] for p in theirs)
+    summary = f"trade to {other_name}: send {out_names} / receive {in_names}"
+    extras = {"send_players": mine,
+              "receive_players": [{"name": p["name"], "player_id": p["player_id"]}
+                                  for p in theirs],
+              "to_team_id": other_id, "to_team_name": other_name,
+              "scoring_period": sp}
+
+    if dry_run:
+        return _result(action, ctx.key, True, True, f"[DRY RUN] would propose {summary}",
+                       None, **extras)
+
+    # A proposal is a TRADE_PROPOSAL envelope left PENDING — the other manager
+    # accepts or declines in their app. Items carry type TRADE and name both
+    # ends explicitly; toLineupSlotId lands incoming players on the bench.
+    payload = {
+        "isLeagueManager": False,
+        "isPending": True,
+        "scoringPeriodId": sp,
+        "teamId": ctx.team_id,
+        "memberId": ctx.swid,
+        "type": "TRADE_PROPOSAL",
+        "executionType": "EXECUTE",
+        "items": (
+            [{"playerId": p["player_id"], "type": "TRADE", "isKeeper": False,
+              "fromTeamId": ctx.team_id, "toTeamId": other_id,
+              "toLineupSlotId": BENCH_SLOT} for p in mine]
+            + [{"playerId": p["player_id"], "type": "TRADE", "isKeeper": False,
+                "fromTeamId": other_id, "toTeamId": ctx.team_id,
+                "toLineupSlotId": BENCH_SLOT} for p in theirs]
+        ),
+    }
+    ok, err = _post_transaction(ctx, payload)
+    return _result(action, ctx.key, ok, False,
+                   f"proposed {summary}" if ok else f"failed — {summary}",
+                   None if ok else err, **extras)
+
+
 # ── Offline self-test ──────────────────────────────────────────────────────────
 def _selftest() -> int:
     """Exercise the eligibility solver with a synthetic roster. No ESPN, no config."""
@@ -744,6 +864,14 @@ def main() -> int:
     ln.add_argument("--starters", required=True,
                     help="JSON file: {\"starters\": [\"Name\", ...]}")
 
+    tr = sub.add_parser("trade", help="propose a trade to another team")
+    tr.add_argument("--send", required=True, action="append",
+                    help="player of yours to send (repeat for multiple)")
+    tr.add_argument("--receive", required=True, action="append",
+                    help="player to receive (repeat for multiple)")
+    tr.add_argument("--to-team", default=None,
+                    help="optional cross-check: counterparty name or team id")
+
     args = ap.parse_args()
 
     if args.cmd == "selftest":
@@ -765,6 +893,9 @@ def main() -> int:
     elif args.cmd == "lineup":
         with open(args.starters) as f:
             res = set_lineup(json.load(f)["starters"], dry_run=dry, **kw)
+    elif args.cmd == "trade":
+        res = propose_trade(args.send, args.receive, dry_run=dry,
+                            to_team=args.to_team, **kw)
     else:                                     # pragma: no cover — argparse guards
         ap.error(f"unknown command {args.cmd}")
 
