@@ -2,9 +2,9 @@
 """iMac executor — apply approved roster moves from pending_moves.json.
 
 This closes the "approve in chat -> roster updates" loop. Cron it on the iMac
-every few minutes. Each run: (optionally) git-pulls this repo, reads the queue,
+hourly. Each run: (optionally) git-pulls this repo, reads the queue,
 runs any move whose id it hasn't applied yet, records the id so it never repeats,
-logs the result, and emails a confirmation.
+logs the result, and posts a Discord alert (email fallback if no webhook set).
 
 Delivery: when you approve a move in chat, the approved entry is appended to
 pending_moves.json and committed to this repo. The iMac's `--pull` cron picks it
@@ -127,8 +127,11 @@ def main() -> int:
 
     summary = "\n".join(results)
     eu.log("Run summary:\n" + summary)
+    # Post a Discord alert (falls back to email if no webhook configured).
+    # channel="baseball" -> the baseball league's Discord channel; other leagues
+    # add their own webhook under discord_webhooks and pass their own channel key.
     try:
-        eu.send_email(cfg, "Fantasy: roster moves applied", summary)
+        eu.notify(cfg, "Fantasy ⚾ roster moves applied", summary, channel="baseball")
     except Exception:
         pass
     return 0

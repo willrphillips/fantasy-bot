@@ -294,6 +294,54 @@ def send_email(cfg: dict, subject: str, body: str):
         server.login(sender, password)
         server.sendmail(sender, recipient, msg.as_string())
 
+
+# ── Discord notifications ───────────────────────────────────────────────────────
+# Webhook URLs live in config.json (gitignored), so they stay iMac-local just like
+# the ESPN cookies. One webhook per league/channel lets each league post to its own
+# Discord channel:
+#
+#   "discord_webhooks": {
+#       "baseball":           "https://discord.com/api/webhooks/...",
+#       "cast_final_fantasy": "https://discord.com/api/webhooks/...",
+#       "sunday_funday":      "https://discord.com/api/webhooks/..."
+#   },
+#   "discord_webhook": "https://discord.com/api/webhooks/..."   # optional default
+def _discord_url(cfg: dict, channel: str = None) -> str | None:
+    hooks = cfg.get("discord_webhooks") or {}
+    if channel and channel in hooks:
+        return hooks[channel]
+    if cfg.get("discord_webhook"):
+        return cfg["discord_webhook"]
+    if len(hooks) == 1:                       # single league configured — use it
+        return next(iter(hooks.values()))
+    return None
+
+
+def send_discord(cfg: dict, content: str, channel: str = None,
+                 username: str = "Fantasy Bot"):
+    """Post a message to a Discord channel webhook. Raises if none configured."""
+    url = _discord_url(cfg, channel)
+    if not url:
+        raise RuntimeError(f"no Discord webhook configured for channel={channel!r}")
+    # Discord hard-caps message content at 2000 chars.
+    resp = requests.post(url, json={"content": content[:1990], "username": username},
+                         timeout=10)
+    resp.raise_for_status()
+
+
+def notify(cfg: dict, subject: str, body: str, channel: str = None):
+    """Run notification: Discord webhook preferred, email as fallback."""
+    if _discord_url(cfg, channel):
+        try:
+            send_discord(cfg, f"**{subject}**\n{body}", channel=channel)
+            return
+        except Exception as e:                # noqa: BLE001 — fall back to email
+            log(f"[notify] Discord post failed ({e}); trying email")
+    try:
+        send_email(cfg, subject, body)
+    except Exception as e:                    # noqa: BLE001 — best effort
+        log(f"[notify] email fallback also failed: {e}")
+
 # ── Logging ────────────────────────────────────────────────────────────────────
 def log(msg: str):
     print(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {msg}", flush=True)
