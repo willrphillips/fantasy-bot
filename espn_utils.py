@@ -168,7 +168,10 @@ def move_player(cookies: dict, scoring_period: int,
         return True
 
     payload = {
-        "isKeepersTransaction": False,
+        # isKeepersTransaction here is rejected as 400 Invalid Input; the web
+        # client sends isLeagueManager + memberId instead. See fantasy_exec.
+        "isLeagueManager": False,
+        "memberId": cookies.get("SWID"),
         "scoringPeriodId": scoring_period,
         "teamId": TEAM_ID,
         "type": "ROSTER",
@@ -214,7 +217,8 @@ def apply_lineup_moves(cookies: dict, scoring_period: int,
     if dry_run:
         return True
     payload = {
-        "isKeepersTransaction": False,
+        "isLeagueManager": False,
+        "memberId": cookies.get("SWID"),
         "scoringPeriodId": scoring_period,
         "teamId": TEAM_ID,
         "type": "ROSTER",
