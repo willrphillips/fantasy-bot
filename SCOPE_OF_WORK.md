@@ -19,6 +19,65 @@ ingest + publish system). The pre-existing `espn_nightly_moves`,
 > live ESPN API** — this session's environment couldn't reach ESPN. It
 > must be dry-run-validated, then `--apply`-tested once, on the iMac
 > before any automation is trusted. See the 2026-06-10 entry below.
+>
+> 📋 **DESIGN LOCKED, BUILD DEFERRED (2026-07-20): daily auto-lineup +
+> waiver-scan-to-Edwin.** Three decisions captured in the 2026-07-20 entry
+> below; no code written yet (Will out of usage). The build depends on the
+> write path above being validated first.
+
+## 2026-07-20 — auto-lineup + waiver-scan design locked (NOT YET BUILT)
+
+Will asked for two things: (1) a function that adjusts the roster
+automatically each day based on who is playing and matchup projections,
+and (2) Edwin to text him any waiver-wire moves he should make. Design
+and the load-bearing choices were locked this session; **no code was
+written — Will was out of usage and asked to record everything and
+close.** Resume from here.
+
+- **Decision 1 — lineup apply: auto, after one validation run.** The
+  daily lineup computes and **auto-applies each morning on the iMac**
+  (hands-off), EXCEPT the very first run is dry-run only so Will eyeballs
+  the moves once — because the ESPN write path is still UNVALIDATED (see
+  the open item above / 2026-06-10 entry). After one clean dry run, flip
+  to auto. Rationale: a daily lineup is reversible next morning, so
+  auto-apply is low-risk *once the write path is proven*. Lineup is the
+  ONLY piece that auto-applies.
+- **Decision 2 — start/sit logic: ESPN gates, fantasy.db ranks.** Use
+  ESPN's per-day projection to decide **who is playing today** (bench any
+  eligible player projected ~0 — off day / not playing), then **rank the
+  players who are playing by fantasy.db L14 form** (`window_stats`)
+  weighted for Strategy C (HR/RBI up, protect W/ERA/WHIP/K, HLD scores,
+  punt SV/SB). Seat the top eligible into slots via the existing
+  eligibility-safe `set_lineup.compute_moves()` — never bypass it.
+  UNVERIFIED data question for the build: `espn_utils.parse_roster`
+  currently reads the *season* projected breakdown from `stats[0]`
+  (`projected_breakdown`). Confirm on the iMac that ESPN exposes a
+  *per-scoring-period (daily)* projection — likely a different `stats`
+  key — before trusting the "who's playing today" gate. If no reliable
+  daily projection exists, fall back to ESPN's lineup-lock / start status
+  as the "is he playing" signal.
+- **Decision 3 — waiver delivery: Edwin relay on atlas-cloud. DEFERRED.**
+  Waivers stay **propose-only / gated** (matches the handbook's
+  always-gated principle and Will's own "moves I *should make*" framing —
+  they are NOT auto-executed). Delivery path: the scan writes a
+  recommendation file into the Dropbox-synced workspace; **Edwin**
+  (Discord assistant on atlas-cloud, `edwin.service`) polls it and DMs
+  Will in his own voice. **Queued for later — not this session.** For a
+  first cut, the existing `espn_utils.send_email()` can carry the
+  recommendations until the Edwin hook is wired.
+- **Planned files (not yet written).** `auto_lineup.py` — pulls the
+  roster, applies Decision 2 to pick starters, calls `compute_moves()`,
+  applies via `apply_lineup_moves()` (dry-run on the first run).
+  `waiver_scan.py` — ranks add/drops from `fantasy_lib` (`hot_bats` /
+  `cold_bats` / `regression_watch`, FA-only) under Strategy C, writes the
+  recommendation for Edwin. Both run from a new iMac cron line each
+  morning **before the lineup lock**, after the nightly ingest/publish
+  chain.
+- **Approved starter list is the approved output.** An approved lineup
+  remains a list of desired starters fed to `compute_moves()`;
+  `auto_lineup.py` just generates that list instead of hand-authoring
+  `starters.json`. The eligibility-safe planner and the gated
+  `apply_pending.py` queue are unchanged and still authoritative.
 
 ## 2026-06-10 — ESPN write tooling added (NEEDS LIVE VALIDATION)
 
