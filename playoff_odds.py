@@ -1,144 +1,276 @@
 #!/usr/bin/env python3
 """Monte Carlo playoff-odds simulator for the Captain Phillips league.
 
-H2H categories, 11 cats, weekly matchups, TOP 4 make playoffs. Standings are
-cumulative CATEGORY records (W-L-T summing to weeks*11).
+H2H categories, 11 cats, weekly matchups, top 4 make a seeded 2-week bracket.
+Standings are cumulative CATEGORY records (W-L-T summing to weeks * 11).
 
-Model: each team's forward weekly output per category is drawn around its
-season-to-date rate (counting cats ~ Normal(mean, sqrt(mean)); rate cats ~
-Normal(rate, sigma)). Remaining regular weeks are played on a round-robin
-schedule; final seeding is by category win pct; top 4 enter a seeded bracket.
+Everything is pulled LIVE — nothing is hardcoded from a stale snapshot:
+  * league settings (regular-season length, playoff team count) from ESPN
+  * current category records from ESPN
+  * the actual remaining schedule from ESPN (not a synthetic round robin)
+  * each team's forward weekly output BOOTSTRAPPED from its own completed
+    weekly totals in fantasy.db, resampling whole weeks so the correlation
+    between categories inside a week is preserved
 
-Inputs are the snapshot.md "Season-Long Category Totals" + "Standings" tables.
-Update the T and REC dicts from a fresh snapshot before trusting absolute levels;
-the scenario *deltas* are the robust output. Assumptions (WEEKS_PLAYED,
-REMAINING_REG, sigmas) are declared below — vary them to stress-test.
-
-Run: python3 playoff_odds.py
+Run: venv/bin/python3 playoff_odds.py [--sims 20000] [--json]
 """
-import random, math
-random.seed(42)
+from __future__ import annotations
 
-CATS = ["AVG","R","HR","RBI","SB","K","W","SV","HLD","ERA","WHIP"]
-LOWER_BETTER = {"ERA","WHIP"}
-COUNTING = {"R","HR","RBI","SB","K","W","SV","HLD"}
-RATE_SIGMA = {"AVG":0.022,"ERA":1.10,"WHIP":0.15}   # weekly team-level sd
-WEEKS_PLAYED = 14           # standings sum 154 = 14*11
-REMAINING_REG = 7          # periods 15..21 (21-week reg season)
-N = 6000
+import argparse
+import collections
+import datetime as dt
+import json
+import math
+import random
+import sqlite3
+import sys
 
-# --- snapshot.md: Season-Long Category Totals (update on refresh) ---
-T = {
-"Bay County":      [0.266,521,161,498,68,440,23,76,34,3.87,1.24],
-"Sh'Dynasty":      [0.253,479,156,454,87,803,44,49, 4,3.05,1.11],
-"Fellowship":      [0.241,460,131,426,81,872,54,42,20,3.56,1.11],
-"Brian's":         [0.269,476,137,449,55,727,42,17, 1,3.70,1.25],
-"Ellz Bellz":      [0.260,492,140,485,76,748,46,32, 3,3.85,1.22],
-"Southside":       [0.231,404,119,396,95,947,57,41,25,4.03,1.25],
-"Captain Phillips":[0.250,463,135,417,55,639,46,11,13,4.00,1.19],
-"EL TORNADO":      [0.255,452,121,417,64,476,28,25, 0,3.96,1.27],
-"Antonio's":       [0.254,420,126,404,56,552,36,18,19,3.49,1.15],
-"Pete's":          [0.249,342, 82,289,58,384,20,21, 1,3.74,1.16],
-}
-# current cumulative category record (W,L,T) from snapshot standings
-REC = {
-"Bay County":(88,56,10),"Sh'Dynasty":(74,67,13),"Fellowship":(74,67,13),
-"Brian's":(74,62,18),"Ellz Bellz":(77,57,20),"Southside":(77,63,14),
-"Captain Phillips":(61,77,16),"EL TORNADO":(64,74,16),"Antonio's":(58,85,11),
-"Pete's":(47,86,21),
-}
-TEAMS = list(T.keys())
+import requests
 
-def weekly_params(totals):
-    p = {}
-    for i, c in enumerate(CATS):
-        if c in COUNTING:
-            mean = totals[i] / WEEKS_PLAYED
-            p[c] = ("count", mean, math.sqrt(max(mean, 0.25)))
-        else:
-            p[c] = ("rate", totals[i], RATE_SIGMA[c])
-    return p
+import espn_utils as E
 
-def draw(params, c):
-    kind, mean, sd = params[c]
-    v = random.gauss(mean, sd)
-    return max(0, round(v)) if kind == "count" else max(0.0, v)
+DB = "fantasy.db"
+CATS = ["AVG", "R", "HR", "RBI", "SB", "K", "W", "SV", "HLD", "ERA", "WHIP"]
+LOWER_BETTER = {"ERA", "WHIP"}
+RATE = {"AVG", "ERA", "WHIP"}
+ME = "Captain Phillips"
+UA = {"User-Agent": "Mozilla/5.0"}
 
-def week_values(params):
-    return {c: draw(params, c) for c in CATS}
 
-def cat_winner(va, vb, c):
-    if va == vb: return 0
-    better = va < vb if c in LOWER_BETTER else va > vb
+# ---------------------------------------------------------------- live pulls
+def espn(views):
+    cfg = E.load_config()
+    url = (f"https://lm-api-reads.fantasy.espn.com/apis/v3/games/flb"
+           f"/seasons/{E.SEASON}/segments/0/leagues/{E.LEAGUE_ID}")
+    r = requests.get(url, params={"view": views}, cookies=E.cookies_from_cfg(cfg),
+                     headers=UA, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+
+def league_state():
+    d = espn(["mSettings", "mTeam", "mMatchup"])
+    sch = d["settings"]["scheduleSettings"]
+    names = {t["id"]: t["name"] for t in d["teams"]}
+    recs = {}
+    for t in d["teams"]:
+        r = t["record"]["division"]
+        recs[names[t["id"]]] = (r["wins"], r["losses"], r["ties"])
+    cur = d["status"]["currentMatchupPeriod"]
+    last_reg = sch["matchupPeriodCount"]
+    remaining = collections.defaultdict(list)
+    for m in d["schedule"]:
+        p = m["matchupPeriodId"]
+        if cur <= p <= last_reg:
+            remaining[p].append((names[m["home"]["teamId"]], names[m["away"]["teamId"]]))
+    return {
+        "names": list(names.values()),
+        "records": recs,
+        "current_week": cur,
+        "last_reg_week": last_reg,
+        "playoff_teams": sch["playoffTeamCount"],
+        "playoff_week_len": sch["playoffMatchupPeriodLength"],
+        "schedule": dict(sorted(remaining.items())),
+    }
+
+
+# ------------------------------------------------- historical weekly samples
+def weekly_history(db=DB):
+    """Completed weekly category totals per team, from the daily matchup pulls.
+
+    The matchup rows are cumulative WITHIN a week and reset each Monday, so the
+    Sunday pull is that week's final line. Only weeks with a Sunday pull count.
+    """
+    con = sqlite3.connect(db)
+    rows = con.execute(
+        "select date_pulled, home_team, away_team, cat, home_value, away_value "
+        "from matchups where cat in (%s)" % ",".join("?" * len(CATS)), CATS
+    ).fetchall()
+    con.close()
+
+    by_date = collections.defaultdict(dict)   # date -> (team, cat) -> value
+    for date, home, away, cat, hv, av in rows:
+        by_date[date][(home, cat)] = hv
+        by_date[date][(away, cat)] = av
+
+    weeks = collections.defaultdict(list)     # monday -> [dates]
+    for date in by_date:
+        d = dt.date.fromisoformat(date)
+        weeks[d - dt.timedelta(days=d.weekday())].append(date)
+
+    samples = collections.defaultdict(list)   # team -> [{cat: value}]
+    for monday, dates in sorted(weeks.items()):
+        sunday = (monday + dt.timedelta(days=6)).isoformat()
+        if sunday not in dates:
+            continue                          # partial / in-flight week
+        snap = by_date[sunday]
+        for t in {t for (t, _) in snap}:
+            wk = {}
+            for c in CATS:
+                v = snap.get((t, c))
+                if v is None or not math.isfinite(v):
+                    wk = None
+                    break
+                wk[c] = v
+            if wk:
+                samples[t].append(wk)
+    return samples
+
+
+# ------------------------------------------------------------------ simulate
+def cat_result(a, b, c):
+    if a == b:
+        return 0
+    better = a < b if c in LOWER_BETTER else a > b
     return 1 if better else -1
 
-def round_robin(idx):
-    n = len(idx); rounds = []; fixed = idx[0]; rot = idx[1:]
-    for _ in range(n - 1):
-        pairs = [(fixed, rot[-1])]
-        for k in range(len(rot) // 2):
-            pairs.append((rot[k], rot[len(rot) - 2 - k]))
-        rounds.append(pairs); rot = [rot[-1]] + rot[:-1]
-    return rounds
-SCHED = round_robin(list(range(len(TEAMS))))
 
-def simulate(params_by_team):
-    cp = TEAMS.index("Captain Phillips")
-    playoff = finals = champ = 0
-    for _ in range(N):
-        W = {t: REC[TEAMS[t]][0] for t in range(len(TEAMS))}
-        L = {t: REC[TEAMS[t]][1] for t in range(len(TEAMS))}
-        Tt = {t: REC[TEAMS[t]][2] for t in range(len(TEAMS))}
-        for wk in range(REMAINING_REG):
-            vals = [week_values(params_by_team[TEAMS[t]]) for t in range(len(TEAMS))]
-            for a, b in SCHED[wk % len(SCHED)]:
-                for c in CATS:
-                    r = cat_winner(vals[a][c], vals[b][c], c)
-                    if r == 1: W[a] += 1; L[b] += 1
-                    elif r == -1: W[b] += 1; L[a] += 1
-                    else: Tt[a] += 1; Tt[b] += 1
-        pct = {t: (W[t] + 0.5 * Tt[t]) / (W[t] + L[t] + Tt[t]) for t in range(len(TEAMS))}
-        order = sorted(range(len(TEAMS)), key=lambda t: pct[t], reverse=True)
-        top4 = order[:4]
-        if cp not in top4:
+def score_week(wa, wb):
+    """Category W-L-T for team a against team b over one (or a summed) line."""
+    w = l = t = 0
+    for c in CATS:
+        r = cat_result(wa[c], wb[c], c)
+        w += r == 1
+        l += r == -1
+        t += r == 0
+    return w, l, t
+
+
+def combine(lines):
+    """Fold N weekly lines into one playoff-round line (rate cats averaged)."""
+    return {c: (sum(x[c] for x in lines) / len(lines) if c in RATE
+                else sum(x[c] for x in lines)) for c in CATS}
+
+
+def simulate(state, samples, n_sims, rng, boost=None):
+    teams = state["names"]
+    pool = {t: samples.get(t, []) for t in teams}
+    thin = [t for t in teams if len(pool[t]) < 4]
+    if thin:
+        raise SystemExit(f"not enough weekly history for: {thin}")
+
+    def draw(t):
+        wk = dict(rng.choice(pool[t]))
+        if boost and t == ME:
+            for c, dv in boost.items():
+                wk[c] = max(0.0, wk[c] + dv)
+        return wk
+
+    n_playoff = state["playoff_teams"]
+    rounds = state["playoff_week_len"]
+    made = finals = champ = 0
+    seeds = collections.Counter()
+
+    for _ in range(n_sims):
+        W = {t: state["records"][t][0] for t in teams}
+        L = {t: state["records"][t][1] for t in teams}
+        T = {t: state["records"][t][2] for t in teams}
+        for pairs in state["schedule"].values():
+            lines = {t: draw(t) for t in teams}
+            for home, away in pairs:
+                w, l, t_ = score_week(lines[home], lines[away])
+                W[home] += w; L[home] += l; T[home] += t_
+                W[away] += l; L[away] += w; T[away] += t_
+
+        pct = {t: (W[t] + 0.5 * T[t]) / (W[t] + L[t] + T[t]) for t in teams}
+        order = sorted(teams, key=lambda t: (pct[t], rng.random()), reverse=True)
+        seeds[order.index(ME) + 1] += 1
+        bracket = order[:n_playoff]
+        if ME not in bracket:
             continue
-        playoff += 1
-        seed = {t: top4.index(t) for t in top4}
+        made += 1
+
+        rank = {t: i for i, t in enumerate(bracket)}
+
         def play(a, b):
-            va, vb = week_values(params_by_team[TEAMS[a]]), week_values(params_by_team[TEAMS[b]])
-            wa = sum(1 for c in CATS if cat_winner(va[c], vb[c], c) == 1)
-            wb = sum(1 for c in CATS if cat_winner(va[c], vb[c], c) == -1)
-            if wa > wb: return a
-            if wb > wa: return b
-            return a if seed[a] < seed[b] else b
-        s1, s2 = play(top4[0], top4[3]), play(top4[1], top4[2])
-        if cp in (s1, s2): finals += 1
-        fin = play(s1, s2) if seed[s1] < seed[s2] else play(s2, s1)
-        if fin == cp: champ += 1
-    return playoff / N, finals / N, champ / N
+            la = combine([draw(a) for _ in range(rounds)])
+            lb = combine([draw(b) for _ in range(rounds)])
+            w, l, _t = score_week(la, lb)
+            if w != l:
+                return a if w > l else b
+            return a if rank[a] < rank[b] else b      # higher seed breaks ties
 
-def cp_variant(**delta):
-    """delta: per-WEEK change for counting cats, absolute change for rate cats."""
-    tot = T["Captain Phillips"][:]
-    for c, dv in delta.items():
-        i = CATS.index(c)
-        tot[i] += dv * WEEKS_PLAYED if c in COUNTING else dv
-    p = dict(base); p["Captain Phillips"] = weekly_params(tot); return p
+        f1 = play(bracket[0], bracket[3])
+        f2 = play(bracket[1], bracket[2])
+        if ME in (f1, f2):
+            finals += 1
+            if play(*sorted([f1, f2], key=lambda t: rank[t])) == ME:
+                champ += 1
+    return made / n_sims, finals / n_sims, champ / n_sims, seeds
 
-base = {t: weekly_params(T[t]) for t in TEAMS}
 
-SCENARIOS = {
-    "BASELINE (current roster)":   base,
-    "Lineup fix (Teoscar active)": cp_variant(AVG=0.001, R=0.5, RBI=0.7, HR=0.3),
-    "+Aranda 1B (AVG/RBI, for Ctreras)": cp_variant(AVG=0.004, R=0.6, RBI=1.1, HR=0.35),
-    "+setup HLD arms (Whitlock/Morejon)": cp_variant(HLD=1.5, K=2.0, W=0.1, ERA=-0.12, WHIP=-0.03),
-    "+ratio SP (drop Elder->Mize/Rogers)": cp_variant(K=1.0, W=0.1, ERA=-0.20, WHIP=-0.04),
-    "ALL BARONBALL MOVES stacked":  cp_variant(AVG=0.004, R=1.0, RBI=1.6, HR=0.6, HLD=1.5, K=3.0, W=0.2, ERA=-0.30, WHIP=-0.07),
-}
+def ordinal(n):
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+# ---------------------------------------------------------------------- main
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--sims", type=int, default=20000)
+    ap.add_argument("--json", action="store_true")
+    a = ap.parse_args()
+
+    state = league_state()
+    samples = weekly_history()
+    rng = random.Random(42)
+
+    weeks_left = len(state["schedule"])
+    hist = len(samples[ME])
+
+    scenarios = {
+        "Baseline (roster as it stands)": None,
+        "Bats wake up (+3 R, +1 HR, +3 RBI, +.008 AVG)":
+            {"R": 3, "HR": 1, "RBI": 3, "AVG": 0.008},
+        "Arms deliver (+8 K, -0.40 ERA, -0.06 WHIP)":
+            {"K": 8, "W": 0.5, "ERA": -0.40, "WHIP": -0.06},
+        "Baronball breaks right (both)":
+            {"R": 3, "HR": 1, "RBI": 3, "AVG": 0.008,
+             "K": 8, "W": 0.5, "ERA": -0.40, "WHIP": -0.06},
+    }
+
+    results, base_seeds = {}, None
+    for name, boost in scenarios.items():
+        made, fin, ch, seeds = simulate(state, samples, a.sims, rng, boost)
+        results[name] = {"playoffs": made, "finals": fin, "champ": ch}
+        if base_seeds is None:
+            base_seeds = seeds
+
+    rec = state["records"][ME]
+    pcts = sorted((((w + 0.5 * t) / (w + l + t)), n)
+                  for n, (w, l, t) in state["records"].items())
+    pcts.reverse()
+    cut = pcts[state["playoff_teams"] - 1][0]
+    mine = next(p for p, n in pcts if n == ME)
+    gap = round((cut - mine) * sum(rec), 1)
+
+    out = {"generated": dt.datetime.now().isoformat(timespec="seconds"),
+           "current_week": state["current_week"], "weeks_left": weeks_left,
+           "playoff_teams": state["playoff_teams"], "history_weeks": hist,
+           "sims": a.sims, "record": f"{rec[0]}-{rec[1]}-{rec[2]}",
+           "pct": round(mine, 4), "cutline_pct": round(cut, 4), "gap_cat_wins": gap,
+           "scenarios": results,
+           "seed_distribution": {k: v / a.sims for k, v in sorted(base_seeds.items())}}
+
+    if a.json:
+        print(json.dumps(out, indent=2))
+        return
+
+    print(f"Playoff odds — {ME}   (week {state['current_week']}, "
+          f"{weeks_left} weeks left, top {state['playoff_teams']} advance)")
+    print(f"Record {out['record']} ({mine:.3f}); the 4th seed sits at {cut:.3f}, "
+          f"a gap of ~{gap} category wins")
+    print(f"Bootstrapped from {hist} completed weeks per team, {a.sims:,} sims\n")
+    print(f"{'Scenario':50s} {'Playoffs':>9s} {'Finals':>8s} {'Title':>7s}")
+    for name, r in results.items():
+        print(f"{name:50s} {r['playoffs']*100:8.1f}% "
+              f"{r['finals']*100:7.1f}% {r['champ']*100:6.1f}%")
+    print("\nFinish distribution (baseline):")
+    for seed, p in out["seed_distribution"].items():
+        if p >= 0.005:
+            print(f"  {ordinal(seed):>4s}  {p*100:5.1f}%")
+
 
 if __name__ == "__main__":
-    print(f"Monte Carlo: N={N}, remaining reg weeks={REMAINING_REG}, TOP 4 make playoffs\n")
-    print(f"{'Scenario':30s} {'P(playoffs)':>12s} {'P(finals)':>10s} {'P(champ)':>9s}")
-    for name, p in SCENARIOS.items():
-        po, fi, ch = simulate(p)
-        print(f"{name:30s} {po*100:10.1f}% {fi*100:8.1f}% {ch*100:7.1f}%")
+    sys.exit(main())
