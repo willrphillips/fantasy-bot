@@ -20,22 +20,26 @@ LEAGUE_ID = 2057904545
 TEAM_ID   = 9
 SEASON    = 2026
 BASE_URL  = (
-    f"https://fantasy.espn.com/apis/v3/games/flb"
+    # fantasy.espn.com/apis/v3 is fronted by Akamai and now 403s every API call.
+    # lm-api-writes accepts both reads and writes with the same cookies.
+    f"https://lm-api-writes.fantasy.espn.com/apis/v3/games/flb"
     f"/seasons/{SEASON}/segments/0/leagues/{LEAGUE_ID}"
 )
 
-# Lineup slot ID → label
+# Lineup slot ID → label. ESPN's real flb map — see fantasy_exec.SLOT_NAMES;
+# the earlier guesswork here sent players to slot 19 (capacity 0) and every
+# transaction came back a 409.
 SLOT_NAMES = {
     0:"C", 1:"1B", 2:"2B", 3:"3B", 4:"SS",
-    5:"OF", 6:"OF", 7:"OF",
-    11:"P", 12:"UTIL",
-    13:"P", 14:"P", 15:"P", 16:"P", 17:"P", 18:"P",
-    19:"BE", 20:"IL", 21:"IL+",
+    5:"OF", 6:"2B/SS", 7:"1B/3B",
+    8:"LF", 9:"CF", 10:"RF", 11:"DH", 12:"UTIL",
+    13:"P", 14:"SP", 15:"RP",
+    16:"BE", 17:"IL", 19:"IF",
 }
 
-ACTIVE_SLOTS = set(range(0, 19))
-BENCH_SLOT   = 19
-IL_SLOTS     = {20, 21}
+ACTIVE_SLOTS = set(range(0, 16))
+BENCH_SLOT   = 16
+IL_SLOTS     = {17}
 
 IL_STATUSES     = {"OUT", "INJURED", "IL10", "IL15", "IL60"}
 ACTIVE_STATUSES = {"ACTIVE", "NORMAL", ""}
@@ -96,12 +100,12 @@ def parse_roster(team) -> list[dict]:
     return players
 
 def _slot_id_from_name(name: str) -> int:
-    """Map slot name -> first matching slot ID. 'P' resolves to slot 11."""
+    """Map slot name -> first matching slot ID. 'P' resolves to slot 13."""
     name = (name or "").strip()
     for k, v in SLOT_NAMES.items():
         if v == name:
             return k
-    return 19  # default to bench
+    return BENCH_SLOT
 
 # ── Standings ──────────────────────────────────────────────────────────────────
 def get_standings(league: League) -> list[dict]:
@@ -167,7 +171,8 @@ def move_player(cookies: dict, scoring_period: int,
         "isKeepersTransaction": False,
         "scoringPeriodId": scoring_period,
         "teamId": TEAM_ID,
-        "type": "LINEUP",
+        "type": "ROSTER",
+        "executionType": "EXECUTE",
         "items": [{
             "fromLineupSlotId": from_slot,
             "toLineupSlotId":   to_slot,
@@ -176,10 +181,11 @@ def move_player(cookies: dict, scoring_period: int,
         }],
     }
     resp = requests.post(
-        BASE_URL + "/transactions",
+        BASE_URL + "/transactions/",
         cookies=cookies,
         json=payload,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers={"Accept": "application/json", "Content-Type": "application/json",
+                 "X-Fantasy-Source": "kona", "X-Fantasy-Platform": "kona-PROD"},
         timeout=15,
     )
     if resp.status_code in (200, 201):
@@ -211,7 +217,8 @@ def apply_lineup_moves(cookies: dict, scoring_period: int,
         "isKeepersTransaction": False,
         "scoringPeriodId": scoring_period,
         "teamId": TEAM_ID,
-        "type": "LINEUP",
+        "type": "ROSTER",
+        "executionType": "EXECUTE",
         "items": [
             {"fromLineupSlotId": m["from_slot"], "toLineupSlotId": m["to_slot"],
              "playerId": m["player_id"], "type": "LINEUP"}
@@ -219,10 +226,11 @@ def apply_lineup_moves(cookies: dict, scoring_period: int,
         ],
     }
     resp = requests.post(
-        BASE_URL + "/transactions",
+        BASE_URL + "/transactions/",
         cookies=cookies,
         json=payload,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers={"Accept": "application/json", "Content-Type": "application/json",
+                 "X-Fantasy-Source": "kona", "X-Fantasy-Platform": "kona-PROD"},
         timeout=15,
     )
     if resp.status_code in (200, 201):
@@ -262,10 +270,11 @@ def waiver_move(cookies: dict, scoring_period: int,
         ],
     }
     resp = requests.post(
-        BASE_URL + "/transactions",
+        BASE_URL + "/transactions/",
         cookies=cookies,
         json=payload,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers={"Accept": "application/json", "Content-Type": "application/json",
+                 "X-Fantasy-Source": "kona", "X-Fantasy-Platform": "kona-PROD"},
         timeout=15,
     )
     if resp.status_code in (200, 201):

@@ -78,23 +78,30 @@ def _deps():
     return requests, League
 
 # ── Slot constants ─────────────────────────────────────────────────────────────
+# ESPN's real lineupSlotId map for baseball (flb). Verified against
+# settings.rosterSettings.lineupSlotCounts on league 2057904545: a slot the
+# league doesn't use simply has a count of 0. Getting these wrong is not a
+# cosmetic error — ESPN rejects the transaction with a slot-limit 409.
 SLOT_NAMES = {
     0: "C", 1: "1B", 2: "2B", 3: "3B", 4: "SS",
-    5: "OF", 6: "OF", 7: "OF",
-    11: "P", 12: "UTIL",
-    13: "P", 14: "P", 15: "P", 16: "P", 17: "P", 18: "P",
-    19: "BE", 20: "IL", 21: "IL+",
+    5: "OF", 6: "2B/SS", 7: "1B/3B",
+    8: "LF", 9: "CF", 10: "RF", 11: "DH", 12: "UTIL",
+    13: "P", 14: "SP", 15: "RP",
+    16: "BE", 17: "IL", 19: "IF",
 }
-BENCH_SLOT = 19
-IL_SLOTS = {20, 21}
+BENCH_SLOT = 16
+IL_SLOTS = {17}
 
 # Defaults for this baseball league; a league entry may override either list.
-DEFAULT_HITTER_SLOTS = [0, 1, 2, 3, 4, 5, 6, 7, 12]   # C 1B 2B 3B SS OF OF OF UTIL
-DEFAULT_PITCHER_SLOTS = [11, 13, 14, 15, 16, 17, 18]  # 7 pitcher slots
+# Repeats are meaningful: three OF slots all carry id 5, seven P slots all
+# carry id 13. The matcher seats by position, not by id, so repeats work.
+DEFAULT_HITTER_SLOTS = [0, 1, 2, 3, 4, 5, 5, 5, 12]   # C 1B 2B 3B SS OFx3 UTIL
+DEFAULT_PITCHER_SLOTS = [13] * 7
 
 # Which eligibility group a hitter slot demands. None = UTIL (any hitter),
 # 5 = any OF slot.
-SLOT_GROUP = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 5, 7: 5, 12: None}
+SLOT_GROUP = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4,
+              5: 5, 8: 5, 9: 5, 10: 5, 12: None}
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -136,7 +143,9 @@ class LeagueCtx:
 
     @property
     def base_url(self) -> str:
-        return (f"https://fantasy.espn.com/apis/v3/games/flb"
+        # fantasy.espn.com/apis/v3 is fronted by Akamai and now 403s every API
+        # call. Transactions must go to the lm-api-writes host.
+        return (f"https://lm-api-writes.fantasy.espn.com/apis/v3/games/flb"
                 f"/seasons/{self.season}/segments/0/leagues/{self.league_id}")
 
     def __repr__(self) -> str:
@@ -231,7 +240,7 @@ def _resolve_name(name: str, players: list[dict]) -> dict | None:
 
 # ── Eligibility-safe lineup solving (port of set_lineup.compute_moves) ─────────
 def _is_pitcher(p: dict) -> bool:
-    return 11 in p["eligible"]
+    return 13 in p["eligible"]      # 13 = P; every pitcher carries it
 
 
 def _hitter_can_fill(elig: list[int], slot: int) -> bool:
@@ -245,24 +254,29 @@ def _hitter_can_fill(elig: list[int], slot: int) -> bool:
 
 def _match(starters: list[dict], slots: list[int], can_fill,
            indices: list[int] | None = None) -> dict | None:
-    """Kuhn's bipartite matching. Returns {starter_index: slot_id} or None."""
+    """Kuhn's bipartite matching. Returns {starter_index: slot_id} or None.
+
+    Matching is by POSITION in `slots`, not by slot id, because a league's
+    repeated slots share one id (three OF slots are all id 5). Keying on the id
+    would seat exactly one outfielder and call the rest unplaceable.
+    """
     if indices is None:
         indices = list(range(len(starters)))
-    slot_to_starter: dict[int, int] = {}
+    pos_to_starter: dict[int, int] = {}
 
     def try_assign(i: int, seen: set[int]) -> bool:
-        for s in slots:
-            if s not in seen and can_fill(starters[i]["eligible"], s):
-                seen.add(s)
-                if s not in slot_to_starter or try_assign(slot_to_starter[s], seen):
-                    slot_to_starter[s] = i
+        for pos, s in enumerate(slots):
+            if pos not in seen and can_fill(starters[i]["eligible"], s):
+                seen.add(pos)
+                if pos not in pos_to_starter or try_assign(pos_to_starter[pos], seen):
+                    pos_to_starter[pos] = i
                     return True
         return False
 
     for i in indices:
         if not try_assign(i, set()):
             return None
-    return {i: s for s, i in slot_to_starter.items()}
+    return {i: slots[pos] for pos, i in pos_to_starter.items()}
 
 
 def _match_stable(starters: list[dict], slots: list[int], can_fill) -> dict | None:
@@ -380,17 +394,21 @@ def _post_transaction(ctx: LeagueCtx, payload: dict) -> tuple[bool, str]:
     requests, _ = _deps()
     try:
         resp = requests.post(
-            ctx.base_url + "/transactions",
+            # Trailing slash matters, and the kona headers identify us as the
+            # web client; without them ESPN answers 400 Invalid Input.
+            ctx.base_url + "/transactions/",
             cookies=ctx.cookies, json=payload,
             headers={"Accept": "application/json",
-                     "Content-Type": "application/json"},
+                     "Content-Type": "application/json",
+                     "X-Fantasy-Source": "kona",
+                     "X-Fantasy-Platform": "kona-PROD"},
             timeout=15,
         )
     except requests.RequestException as e:
         return False, f"network error posting to ESPN: {e}"
     if resp.status_code in (200, 201):
         return True, ""
-    return False, f"HTTP {resp.status_code} — {resp.text[:200]}"
+    return False, f"HTTP {resp.status_code} — {resp.text[:300]}"
 
 
 def _result(action: str, ctx_key: str, ok: bool, dry_run: bool,
@@ -549,11 +567,15 @@ def set_lineup(starters: list[str], dry_run: bool = False,
         return _result(action, ctx.key, True, True, f"[DRY RUN] {summary}",
                        None, **extras)
 
+    # The envelope is type ROSTER with executionType EXECUTE; only the ITEMS
+    # are type LINEUP. An envelope of type LINEUP is rejected as invalid input.
     payload = {
-        "isKeepersTransaction": False,
+        "isLeagueManager": False,
         "scoringPeriodId": sp,
         "teamId": ctx.team_id,
-        "type": "LINEUP",
+        "memberId": ctx.swid,
+        "type": "ROSTER",
+        "executionType": "EXECUTE",
         "items": [
             {"fromLineupSlotId": m["from_slot"], "toLineupSlotId": m["to_slot"],
              "playerId": m["player_id"], "type": "LINEUP"}
@@ -583,11 +605,11 @@ def _selftest() -> int:
         pl(7, "JJ Bleday", [5, 12]),
         pl(8, "Brandon Marsh", [5, 12]),
         pl(9, "Willson Contreras", [0, 1, 12]),
-        pl(10, "Yoshinobu Yamamoto", [11]),
-        pl(11, "Bryce Elder", [11]),
-        pl(12, "Braxton Ashcraft", [11]),
+        pl(10, "Yoshinobu Yamamoto", [13]),
+        pl(11, "Bryce Elder", [13]),
+        pl(12, "Braxton Ashcraft", [13]),
         pl(13, "Benchy McBench", [5, 12], slot=5),   # starting now, should bench
-        pl(14, "Hurt Guy", [5, 12], slot=20, il=True),
+        pl(14, "Hurt Guy", [5, 12], slot=17, il=True),
     ]
     names = [p["name"] for p in roster[:12]]
     fails = []
@@ -606,7 +628,7 @@ def _selftest() -> int:
             to = m["to_slot"]
             if to in DEFAULT_HITTER_SLOTS and not _hitter_can_fill(p["eligible"], to):
                 fails.append(f"{p['name']} seated in ineligible slot {to}")
-            if to in DEFAULT_PITCHER_SLOTS and 11 not in p["eligible"]:
+            if to in DEFAULT_PITCHER_SLOTS and 13 not in p["eligible"]:
                 fails.append(f"non-pitcher {p['name']} seated in P slot {to}")
 
     # An IL player named as a starter must be refused.
@@ -625,20 +647,20 @@ def _selftest() -> int:
         fails.append("unknown starter was not refused")
 
     # Stability: a lineup that is already set must produce ZERO moves, even
-    # when players sit in interchangeable slots (OF 5/6/7, P 11/13/14...).
+    # though three OF share slot id 5 and seven P share slot id 13.
     seated = [
         pl(1, "Shea Langeliers", [0, 12], slot=0),
         pl(2, "Freddie Freeman", [1, 12], slot=1),
         pl(3, "Casey Schmitt", [2, 4, 12], slot=4),    # 2B/SS man seated at SS
         pl(4, "Max Muncy", [3, 12], slot=3),
         pl(5, "Kevin McGonigle", [4, 12], slot=12),    # SS man parked in UTIL
-        pl(6, "Juan Soto", [5, 12], slot=7),           # OF slot 7, not 5
-        pl(7, "JJ Bleday", [5, 12], slot=6),
+        pl(6, "Juan Soto", [5, 12], slot=5),
+        pl(7, "JJ Bleday", [5, 12], slot=5),
         pl(8, "Brandon Marsh", [5, 12], slot=5),
         pl(9, "Ozzie Albies", [2, 12], slot=2),
-        pl(10, "Yoshinobu Yamamoto", [11], slot=14),   # P slot 14, not 11
-        pl(11, "Bryce Elder", [11], slot=11),
-        pl(12, "Braxton Ashcraft", [11], slot=17),
+        pl(10, "Yoshinobu Yamamoto", [13], slot=13),
+        pl(11, "Bryce Elder", [13], slot=13),
+        pl(12, "Braxton Ashcraft", [13], slot=13),
     ]
     moves, err = compute_moves(seated, [p["name"] for p in seated])
     if err:
@@ -647,9 +669,8 @@ def _selftest() -> int:
         churn = "; ".join(f"{m['name']} {m['from_label']}->{m['to_label']}" for m in moves)
         fails.append(f"already-set lineup produced {len(moves)} no-op move(s): {churn}")
 
-    # Same, but with slots as ESPN actually reports them: lineupSlot is a label,
-    # so every P collapses to 11 and every OF to 5. This is the live shape that
-    # produced 7 phantom P->P / OF->OF moves before the cosmetic filter.
+    # The live shape: a full 9-hitter + 4-pitcher lineup with every OF on 5 and
+    # every P on 13, which is exactly what ESPN reports back.
     live_shape = [
         pl(1, "Shea Langeliers", [0, 12], slot=0),
         pl(2, "Casey Schmitt", [1, 2, 4, 12], slot=1),   # ESPN has him at 1B
@@ -657,13 +678,13 @@ def _selftest() -> int:
         pl(4, "Max Muncy", [3, 12], slot=3),
         pl(5, "Kevin McGonigle", [4, 12], slot=4),
         pl(6, "Juan Soto", [5, 12], slot=5),
-        pl(7, "Brandon Marsh", [5, 12], slot=5),       # all OF report slot 5
+        pl(7, "Brandon Marsh", [5, 12], slot=5),
         pl(8, "JJ Bleday", [5, 12], slot=5),
         pl(9, "Freddie Freeman", [1, 12], slot=12),
-        pl(10, "Yoshinobu Yamamoto", [11], slot=11),
-        pl(11, "Emerson Hancock", [11], slot=11),      # all P report slot 11
-        pl(12, "Bryce Elder", [11], slot=11),
-        pl(13, "Braxton Ashcraft", [11], slot=11),
+        pl(10, "Yoshinobu Yamamoto", [13], slot=13),
+        pl(11, "Emerson Hancock", [13], slot=13),
+        pl(12, "Bryce Elder", [13], slot=13),
+        pl(13, "Braxton Ashcraft", [13], slot=13),
     ]
     moves, err = compute_moves(live_shape, [p["name"] for p in live_shape])
     if err:
