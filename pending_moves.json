@@ -1,0 +1,13 @@
+{
+  "_comment": "LIVE QUEUE read by apply_pending.py on the iMac. apply:false = DRY RUN (logged + Discord alert of what it WOULD do, nothing submitted, stays queued). Flip apply to true to execute.",
+  "moves": [
+    {
+      "id": "2026-07-20-elder-to-rogers",
+      "type": "waiver",
+      "apply": false,
+      "add": "Trevor Rogers",
+      "drop": "Bryce Elder",
+      "txn_type": "WAIVER"
+    }
+  ]
+}
