@@ -7,9 +7,9 @@ talks to is the same private one the app uses, read-on-request only. So a status
 is invisible until something asks. This asks, once an hour.
 
 Scheduled in-process by edwin's bot.py (same no-root reasoning as the other loops), on the hour
-from 12:00 to 20:00 ET by Will's instruction. Outside that window it sleeps: the 03:30 ingest and
-the 04:00 advisor own the small hours, nothing designated at 6am needs answering before lunch, and
-a status flipping after the last first pitch keeps till morning.
+from 12:00 to 23:00 ET. It SNOOZES midnight through noon by Will's instruction — the 03:30 ingest
+and the 04:00 advisor own the small hours, and nothing designated at 6am needs answering before
+lunch.
 
 Narrow on purpose. It reacts to injury status and nothing else: if an OUT/IL-designated player is
 sitting in the active lineup, he comes out and the best healthy bench man of the same kind takes
