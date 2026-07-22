@@ -507,23 +507,44 @@ def add_drop(add_name: str, drop_name: str, txn_type: str = "WAIVER",
         return _result(action, ctx.key, True, True, f"[DRY RUN] would {summary}",
                        None, **extras)
 
-    payload = {
-        "bidAmount": bid,
-        "executionType": "EXECUTE",
-        "isActingAsTeamOwner": False,
-        "isLeagueManager": False,
-        "isPending": False,
-        "scoringPeriodId": sp,
-        "teamId": ctx.team_id,
-        "type": txn_type,
-        "items": [
-            {"fromTeamId": 0, "isKeeper": False, "playerId": add_obj.playerId,
-             "toTeamId": ctx.team_id, "type": "ADD", "toLineupSlotId": BENCH_SLOT},
-            {"fromTeamId": ctx.team_id, "isKeeper": False,
-             "playerId": drop_p["player_id"], "toTeamId": 0, "type": "DROP"},
-        ],
-    }
-    ok, err = _post_transaction(ctx, payload)
+    def _payload(kind):
+        return {
+            "bidAmount": bid,
+            "executionType": "EXECUTE",
+            "isActingAsTeamOwner": False,
+            "isLeagueManager": False,
+            "isPending": False,
+            "scoringPeriodId": sp,
+            "teamId": ctx.team_id,
+            "type": kind,
+            "items": [
+                {"fromTeamId": 0, "isKeeper": False, "playerId": add_obj.playerId,
+                 "toTeamId": ctx.team_id, "type": "ADD", "toLineupSlotId": BENCH_SLOT},
+                {"fromTeamId": ctx.team_id, "isKeeper": False,
+                 "playerId": drop_p["player_id"], "toTeamId": 0, "type": "DROP"},
+            ],
+        }
+
+    ok, err = _post_transaction(ctx, _payload(txn_type))
+
+    # ESPN alone knows whether a player sits on waivers or is freely available,
+    # and it rejects the wrong transaction type outright. Rather than guess,
+    # flip to the other type and retry once.
+    if not ok and err:
+        flip = {"TRAN_PLAYER_NOT_WAIVERS": "FREEAGENT",
+                "not on waivers": "FREEAGENT",
+                "TRAN_PLAYER_NOT_FREEAGENT": "WAIVER",
+                "not a free agent": "WAIVER"}
+        other = next((v for k, v in flip.items() if k in err), None)
+        if other and other != txn_type:
+            ok, err2 = _post_transaction(ctx, _payload(other))
+            if ok:
+                txn_type = other
+                summary = f"{other}: add {add_obj.name} / drop {drop_p['name']}"
+            else:
+                err = f"{err} | retried as {other}: {err2}"
+
+    extras["txn_type"] = txn_type
     return _result(action, ctx.key, ok, False,
                    summary if ok else f"failed — {summary}",
                    None if ok else err, **extras)
