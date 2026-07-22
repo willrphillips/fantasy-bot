@@ -199,6 +199,44 @@ def empty_slots(roster):
     return [SLOT_NAMES.get(s, str(s)) for s in want]
 
 
+def today_column(roster):
+    """{player_id: short phrase} saying what the man is actually doing today.
+
+    Without this the brief is blind to the single most valuable fact in a daily-lineup league:
+    which of the rostered starters is on the mound tonight. A pitcher who is not starting scores
+    nothing at all, so a reliever whose team plays beats him every time, and an idle SP left in an
+    active slot is a wasted slot. Sourced from the MLB probables, not ESPN."""
+    try:
+        from daily_projections import build_team_matchups
+        from name_matcher import normalize
+        from espn_utils import SLOT_NAMES
+    except Exception as e:
+        log.warning("today column unavailable: %s", e)
+        return {}
+    try:
+        matchups = build_team_matchups()
+    except Exception as e:
+        log.warning("probables fetch failed: %s", e)
+        return {}
+    out = {}
+    for p in roster:
+        m = matchups.get(p.get("pro_team") or "", {})
+        if not m.get("has_game"):
+            out[p.get("player_id")] = "no game"
+            continue
+        elig = {SLOT_NAMES.get(s, str(s)) for s in (p.get("eligible") or [])}
+        opp = m.get("opponent") or "?"
+        if not (elig & {"SP", "RP", "P"}):
+            out[p.get("player_id")] = f"plays {opp}"
+        elif normalize(m.get("probable_pitcher") or "") == normalize(p.get("name") or ""):
+            out[p.get("player_id")] = f"STARTING today vs {opp}"
+        elif "RP" in elig:
+            out[p.get("player_id")] = f"reliever, team plays {opp}"
+        else:
+            out[p.get("player_id")] = "NOT starting today"
+    return out
+
+
 def roster_block(roster):
     if not roster:
         return "(live ESPN roster unavailable — fall back to the roster in the team review below, " \
@@ -207,11 +245,14 @@ def roster_block(roster):
         from espn_utils import SLOT_NAMES
     except Exception:
         SLOT_NAMES = {}
-    lines = ["| slot | player | positions | injury | mlb_team | pct_owned |", "|---|---|---|---|---|---|"]
+    today = today_column(roster)
+    lines = ["| slot | player | positions | today | injury | mlb_team | pct_owned |",
+             "|---|---|---|---|---|---|---|"]
     for p in roster:
         elig = ",".join(SLOT_NAMES.get(s, str(s)) for s in (p.get("eligible") or []))
-        lines.append("| {} | {} | {} | {} | {} | {} |".format(
+        lines.append("| {} | {} | {} | {} | {} | {} | {} |".format(
             p.get("slot_label", "?"), p.get("name", "?"), elig or p.get("position", ""),
+            today.get(p.get("player_id"), "?"),
             p.get("injury", ""), p.get("pro_team", ""), p.get("pct_own", "")))
     gaps = empty_slots(roster)
     lines.append("")
@@ -261,6 +302,17 @@ Write the brief. Rules, all binding:
 - Check the obvious things: an empty active slot, a starter who is slumping badly with a better bat
   on the bench, an arm with a wretched last-fortnight line, a free agent clearly better than your
   worst rostered player. An unfilled pitching slot is free innings not collected — fill it.
+- PITCHING SLOTS, and this one is absolute. Read the "today" column and seat the pitching slots in
+  this order of preference, every single morning, before you consider anything else:
+    1. anyone marked STARTING today — they are the whole point, seat every one of them;
+    2. then relievers whose team plays today, who at least can throw;
+    3. only then an SP marked NOT starting today, who will record nothing whatever.
+  A reliever ALWAYS outranks a starter who is not on the mound today, however good the starter is.
+  Never bench a man marked STARTING today, and never leave a NOT-starting SP in an active pitching
+  slot while a healthy reliever whose team plays sits on the bench. This is a daily lineup and the
+  brief runs again tomorrow, so benching an idle ace today costs nothing.
+- Judge a reliever on strikeouts and appearances, not on wins or innings. An arm that pitches three
+  times a week in relief is worth more here than a fifth starter who is never seated on his day.
 - Roster is capped, so any add requires a drop. Always name both sides.
 - Never drop a player who is on the IL, and never drop one of the team's genuinely best assets to
   chase a marginal upgrade.

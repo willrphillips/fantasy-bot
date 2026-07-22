@@ -32,6 +32,12 @@ import requests
 # conflict, handled by refetching the sha on the next attempt.
 _RETRYABLE = {408, 409, 429, 500, 502, 503, 504}
 
+# GitHub also returns 403 for things that ARE transient: the push-rule validator timing out on a
+# large blob, and secondary rate limits. A permission failure is 403 too, so match on the message
+# rather than the status, and let anything else 403 stay fatal.
+_RETRYABLE_403 = ("timed out validating", "secondary rate limit",
+                  "abuse detection", "please try again", "try again later")
+
 DB_PATH = Path(os.path.expanduser("~/fantasy-bot/fantasy.db"))
 VIEWS_DIR = Path(os.path.expanduser("~/fantasy-bot/public/views"))
 CONFIG_PATH = Path(os.path.expanduser("~/fantasy-bot/config.json"))
@@ -148,7 +154,11 @@ def commit_file(token, local_path: Path, repo_path: str, message: str,
                 log.info(f"committed {repo_path} ({len(data)} bytes) on attempt {attempt}")
                 return True
             last = f"HTTP {r.status_code} {r.text[:200]}"
-            if r.status_code not in _RETRYABLE:
+            body_low = r.text.lower()
+            transient = (r.status_code in _RETRYABLE
+                         or (r.status_code == 403
+                             and any(s in body_low for s in _RETRYABLE_403)))
+            if not transient:
                 log.error(f"commit failed {repo_path}: {last} (non-retryable)")
                 return False
             log.warning(f"{repo_path} attempt {attempt}/{attempts}: {last}")
@@ -186,8 +196,10 @@ def main():
     failed = []
 
     if not args.views_only:
+        # The db is the one file big enough to trip GitHub's push-rule validator, so it gets more
+        # patience than a 6 KB markdown view does.
         r = commit_file(token, DB_PATH, "data/fantasy.db",
-                         "nightly: update fantasy.db", timeout=120)
+                         "nightly: update fantasy.db", timeout=120, attempts=6)
         if r is True:
             pushed += 1
         elif r is False:
