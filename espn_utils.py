@@ -331,14 +331,22 @@ def _discord_url(cfg: dict, channel: str = None) -> str | None:
 
 
 def send_discord(cfg: dict, content: str, channel: str = None,
-                 username: str = "Fantasy Bot"):
-    """Post a message to a Discord channel webhook. Raises if none configured."""
+                 username: str = None):
+    """Post a message to a Discord channel webhook. Raises if none configured.
+
+    No username/avatar override by default: overriding the username makes Discord fall back to the
+    default (grey) webhook icon, which is how these posts ended up wearing the Discord logo instead
+    of Edwin's robot face. Left alone, each post wears the webhook's own stored name and avatar,
+    stamped as Edwin/robot on startup by the bridge's ensure_avatars().
+    """
     url = _discord_url(cfg, channel)
     if not url:
         raise RuntimeError(f"no Discord webhook configured for channel={channel!r}")
     # Discord hard-caps message content at 2000 chars.
-    resp = requests.post(url, json={"content": content[:1990], "username": username},
-                         timeout=10)
+    payload = {"content": content[:1990]}
+    if username:
+        payload["username"] = username
+    resp = requests.post(url, json=payload, timeout=10)
     resp.raise_for_status()
 
 
