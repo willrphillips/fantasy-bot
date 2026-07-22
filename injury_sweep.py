@@ -74,22 +74,35 @@ def sweep():
         return (score_pitcher(p, matchups, two_starts) if is_pitcher(p)
                 else score_hitter(p, matchups, opp_sp_lookup))
 
+    # The replacement has to be one ESPN will actually seat, not merely the best score. A bench
+    # outfielder cannot cover a hurt second baseman when all three OF slots and UTIL are already
+    # taken, so every candidate is run through the same matcher set_lineup uses before it's picked.
+    fx = fantasy_exec.get_roster()
+    if not fx.get("ok"):
+        return [], fx.get("error") or "could not read the roster for eligibility checking"
+    fx_roster = fx["roster"]
+
+    def seatable(names):
+        _, err = fantasy_exec.compute_moves(fx_roster, names)
+        return err is None
+
     hurt_ids = {p["player_id"] for p in hurt}
     keep = [p for p in players if p["is_active"] and p["player_id"] not in hurt_ids]
     bench = [p for p in players if p["on_bench"] and p["injury"] not in IL_STATUSES]
 
     lines = []
     for p in hurt:
-        want_pitcher = is_pitcher(p)
-        cands = [b for b in bench if is_pitcher(b) == want_pitcher and score(b) > 0]
-        if not cands:
-            lines.append(f"{p['name']} is {p['injury']} and out of the lineup, "
-                         "with nobody on the bench fit to take his place")
+        cands = sorted([b for b in bench if is_pitcher(b) == is_pitcher(p) and score(b) > 0],
+                       key=score, reverse=True)
+        chosen = next((c for c in cands
+                       if seatable([x["name"] for x in keep] + [c["name"]])), None)
+        if not chosen:
+            lines.append(f"{p['name']} is {p['injury']} and comes out of the lineup, "
+                         "with nobody on the bench able to fill the slot")
             continue
-        best = max(cands, key=score)
-        bench.remove(best)
-        keep.append(best)
-        lines.append(f"{p['name']} ({p['injury']}) came out; {best['name']} takes the slot")
+        bench.remove(chosen)
+        keep.append(chosen)
+        lines.append(f"{p['name']} ({p['injury']}) came out; {chosen['name']} takes the slot")
 
     starters = [p["name"] for p in keep]
     res = fantasy_exec.set_lineup(starters, dry_run=DRY_RUN)
