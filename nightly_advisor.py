@@ -311,6 +311,12 @@ Write the brief. Rules, all binding:
   Never bench a man marked STARTING today, and never leave a NOT-starting SP in an active pitching
   slot while a healthy reliever whose team plays sits on the bench. This is a daily lineup and the
   brief runs again tomorrow, so benching an idle ace today costs nothing.
+- HITTERS, same principle, no exceptions: "no game" always loses to "plays X", full stop, regardless
+  of who the two players actually are. If a bench hitter is eligible for an active slot and shows
+  "plays X" while the man in that slot shows "no game", swap them in — even a bench scrub with a
+  microscopic shot of a pinch-hit at-bat outproduces a star sitting completely idle, since idle is a
+  guaranteed zero and any game at all is not. Judge quality only between two players who both have a
+  game; when one has a game and the other doesn't, the game wins on its own, no comparison needed.
 - Judge a reliever on strikeouts and appearances, not on wins or innings. An arm that pitches three
   times a week in relief is worth more here than a fifth starter who is never seated on his day.
 - Roster is capped, so any add requires a drop. Always name both sides.
