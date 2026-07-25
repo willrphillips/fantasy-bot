@@ -287,10 +287,14 @@ LIVE ESPN ROSTER (authoritative, read minutes ago):
 ANALYSIS VIEWS (built from the database, stats current through {latest}):
 {views_text}
 
-Will has lifted the approval gate on roster moves. Whatever you decide below WILL BE SUBMITTED to
-ESPN automatically, minutes from now, while he sleeps. Write as a man reporting what he has done,
-not one asking leave. You may not propose a trade and you may not spend money; those two still
-wait on him.
+Will has lifted the approval gate on roster moves. Lineup/bench swaps below WILL BE SUBMITTED to
+ESPN automatically, minutes from now, and those essentially always clear, so write them as done.
+Any add/drop is also submitted automatically, but ESPN can and does reject it outright, most often
+because the weekly-per-matchup acquisition limit is already spent — you have no way to check that
+limit from here, so never assume it is open. Write add/drop moves as your call and as submitted,
+not as something you know has already gone through; the actual result is appended after your text
+by the code that runs it, and it must not read as contradicting you. You may not propose a trade
+and you may not spend money; those two still wait on him.
 
 Write the brief. Rules, all binding:
 - Open with a one-line verdict: is there anything worth doing today, or is the roster right as it
@@ -322,7 +326,8 @@ Write the brief. Rules, all binding:
 - Roster is capped, so any add requires a drop. Always name both sides.
 - Never drop a player who is on the IL, and never drop one of the team's genuinely best assets to
   chase a marginal upgrade.
-- Close with one line saying the moves are done and he can reverse any of them.
+- Close with one line: lineup swaps are done and he can reverse them; any add/drop has been
+  submitted and he'll see below whether it actually cleared.
 - If you open by saying how many moves there are, the count must match what follows exactly.
 - Voice: Alfred Pennyworth. Curt, dry, understated, full sentences, no em dashes, no exclamation
   marks, no bullet-point report formatting, no bold labels, no enthusiasm. "Sir" at most once.
