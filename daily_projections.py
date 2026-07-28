@@ -12,6 +12,12 @@ import json
 import datetime as dt
 import requests
 
+try:
+    from zoneinfo import ZoneInfo
+    _ET = ZoneInfo("America/New_York")
+except Exception:  # pragma: no cover
+    _ET = None
+
 CACHE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cache")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -36,7 +42,12 @@ MLB_TO_ESPN_TEAM = {v: k for k, v in ESPN_TO_MLB_TEAM.items()}
 
 
 def _today():
-    return dt.date.today().isoformat()
+    """MLB's slate turns over on the Eastern calendar day, not UTC. Using system/UTC
+    'today' here misreads the schedule for roughly the last 4-5 hours of every ET day
+    (system rolls to tomorrow at 00:00 UTC = 8pm ET) — exactly the window when evening
+    lineup checks matter most."""
+    now = dt.datetime.now(_ET) if _ET else dt.datetime.utcnow()
+    return now.date().isoformat()
 
 
 def _cache_path(date_str):

@@ -1,20 +1,28 @@
 #!/usr/bin/env python3
 """
-Fantasy baseball — hourly daytime injury sweep.
+Fantasy baseball — hourly daytime injury + no-game sweep.
 
 ESPN publishes no webhook and no push of any kind for injury designations: the endpoint this repo
 talks to is the same private one the app uses, read-on-request only. So a status that flips at 1pm
 is invisible until something asks. This asks, once an hour.
 
 Scheduled in-process by edwin's bot.py (same no-root reasoning as the other loops), on the hour
-from 12:00 to 23:00 ET. It SNOOZES midnight through noon by Will's instruction — the 03:30 ingest
+from 12:00 to 22:00 ET. It SNOOZES midnight through noon by Will's instruction — the 03:30 ingest
 and the 04:00 advisor own the small hours, and nothing designated at 6am needs answering before
 lunch.
 
-Narrow on purpose. It reacts to injury status and nothing else: if an OUT/IL-designated player is
-sitting in the active lineup, he comes out and the best healthy bench man of the same kind takes
-the slot. It never re-scores the lineup for marginal upgrades — that is the 4am job's work, and
-hourly re-scoring would churn the roster all afternoon on noise.
+Narrow on purpose, on two conditions only:
+  1. Injury status — an OUT/IL-designated player sitting active comes out.
+  2. No game today — an active player whose pro team has no game today comes out. This is the
+     2026-07-27 Freeman/France miss: a manual chat edit put Ty France in over Freddie Freeman
+     without checking the Padres' own schedule, and a stale UTC-vs-ET date bug in
+     daily_projections.py made the live check itself lie about which day's slate it was reading
+     for roughly the last 4-5 hours of every ET day. Both are fixed now (the date bug, in
+     daily_projections._today()), and this sweep is the automated backstop so a gameless starter
+     doesn't sit undetected until Will spots it himself.
+Either way the best healthy, in-action bench player of the same kind (hitter/pitcher) takes the
+slot. It never re-scores the lineup for marginal upgrades — that is the 4am job's work, and hourly
+re-scoring would churn the roster all afternoon on noise.
 
 The seating goes through fantasy_exec.set_lineup, the same path every hand-made move uses, which
 does the real eligibility matching against this league's actual slot layout and leaves IL players
@@ -58,15 +66,26 @@ def sweep():
         return [], f"team {TEAM_ID} not found in league"
 
     players = parse_roster(my_team)
+    # Matchups needed just to test for a gameless active player, before the scoring calls below.
+    matchups = build_team_matchups()
+
+    def has_no_game(p):
+        return not matchups.get(p["pro_team"], {}).get("has_game")
+
     hurt = [p for p in players if p["is_active"] and p["injury"] in IL_STATUSES]
-    if not hurt:
-        log("No injured player in the active lineup.")
+    gameless = [p for p in players
+                if p["is_active"] and p["injury"] not in IL_STATUSES and has_no_game(p)]
+    flagged = hurt + gameless
+    if not flagged:
+        log("Nothing injured or gameless in the active lineup.")
         return [], None
 
-    log("Injured and starting: " + ", ".join(f"{p['name']} ({p['injury']})" for p in hurt))
+    if hurt:
+        log("Injured and starting: " + ", ".join(f"{p['name']} ({p['injury']})" for p in hurt))
+    if gameless:
+        log("Active with no game today: " +
+            ", ".join(f"{p['name']} ({p['pro_team']})" for p in gameless))
 
-    # Only now is it worth the MLB API calls for scoring — most hours end above.
-    matchups = build_team_matchups()
     two_starts = get_pitcher_starts_in_window(days=7)
     opp_sp_lookup = build_opp_sp_era_lookup(league)
 
@@ -86,23 +105,26 @@ def sweep():
         _, err = fantasy_exec.compute_moves(fx_roster, names)
         return err is None
 
-    hurt_ids = {p["player_id"] for p in hurt}
-    keep = [p for p in players if p["is_active"] and p["player_id"] not in hurt_ids]
+    flagged_ids = {p["player_id"] for p in flagged}
+    keep = [p for p in players if p["is_active"] and p["player_id"] not in flagged_ids]
     bench = [p for p in players if p["on_bench"] and p["injury"] not in IL_STATUSES]
 
     lines = []
-    for p in hurt:
+    for p in flagged:
+        reason = p["injury"] if p["injury"] in IL_STATUSES else "no game today"
+        # score(b) > 0 already excludes gameless/non-probable bench players, so a candidate here
+        # is guaranteed to actually be in action today.
         cands = sorted([b for b in bench if is_pitcher(b) == is_pitcher(p) and score(b) > 0],
                        key=score, reverse=True)
         chosen = next((c for c in cands
                        if seatable([x["name"] for x in keep] + [c["name"]])), None)
         if not chosen:
-            lines.append(f"{p['name']} is {p['injury']} and comes out of the lineup, "
+            lines.append(f"{p['name']} is {reason} and comes out of the lineup, "
                          "with nobody on the bench able to fill the slot")
             continue
         bench.remove(chosen)
         keep.append(chosen)
-        lines.append(f"{p['name']} ({p['injury']}) came out; {chosen['name']} takes the slot")
+        lines.append(f"{p['name']} ({reason}) came out; {chosen['name']} takes the slot")
 
     starters = [p["name"] for p in keep]
     res = fantasy_exec.set_lineup(starters, dry_run=DRY_RUN)
@@ -114,7 +136,7 @@ def sweep():
 
 def main():
     log("=" * 55)
-    log("Injury sweep — Captain Phillips")
+    log("Injury + no-game sweep — Captain Phillips")
     if DRY_RUN:
         log("*** DRY RUN — nothing submitted, nothing posted ***")
 
@@ -136,7 +158,7 @@ def main():
         log("Nothing to do. Staying quiet.")
         return
 
-    body = "**Injury sweep** — the lineup has changed.\n" + "\n".join(f"• {ln}" for ln in lines)
+    body = "**Injury + no-game sweep** — the lineup has changed.\n" + "\n".join(f"• {ln}" for ln in lines)
     if err:
         body += f"\n\nThe change did not take: {err}"
     if DRY_RUN:
