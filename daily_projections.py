@@ -54,6 +54,22 @@ def _cache_path(date_str):
     return os.path.join(CACHE_DIR, f"schedule_{date_str}.json")
 
 
+def _game_time_et(game_date_utc):
+    """MLB's gameDate is UTC ISO8601 ("2026-07-28T02:40:00Z"). Truncating that
+    string raw and calling it a local time reads a 6:40pm ET first pitch as
+    10:40pm — the exact bug that made a lineup swap look safe when the game,
+    and the ESPN lineup lock with it, had already started. Convert properly."""
+    if not game_date_utc:
+        return None
+    try:
+        ts = dt.datetime.fromisoformat(game_date_utc.replace("Z", "+00:00"))
+        if _ET:
+            ts = ts.astimezone(_ET)
+        return ts.strftime("%Y-%m-%d %H:%M")
+    except (ValueError, TypeError):
+        return game_date_utc[:16].replace("T", " ")
+
+
 def fetch_schedule(date_str=None, force_refresh=False):
     """Fetch MLB schedule + probable pitchers for a given date.
     Returns the raw API response (cached daily)."""
@@ -123,7 +139,7 @@ def build_team_matchups(date_str=None):
 
         home_sp = teams.get("home", {}).get("probablePitcher", {}).get("fullName")
         away_sp = teams.get("away", {}).get("probablePitcher", {}).get("fullName")
-        game_time = g.get("gameDate", "")[:16].replace("T", " ")
+        game_time = _game_time_et(g.get("gameDate", ""))
 
         result[home_abbrev] = {
             "has_game": True,
