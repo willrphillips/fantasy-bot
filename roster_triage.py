@@ -12,7 +12,10 @@ Runs two independent passes each cycle:
   1. Hitters — conservative, patch-only. An active hitter who is hurt (OUT/IL-status) or whose pro
      team has no game today comes out; the best in-action bench hitter of the same kind takes the
      slot. Everyone else active and in-action is left exactly where they sit. This never re-scores
-     for a marginal upgrade — that churn is the 4am job's business, not a 30-minute one.
+     for a marginal upgrade — that churn is the 4am job's business, not a 30-minute one. If nobody
+     eligible has a game today either, the slot is never left empty: the best bench bat by the
+     week-ahead forecast (season/projected OPS, ignoring today's schedule) takes it instead, so a
+     dead process or a total off-day never shows up as a hole in the lineup.
 
   2. Pitchers — full rebuild every cycle, because "who's starting" and "whose team plays" are both
      day-specific facts that can't be patched incrementally the way a hitter's game-or-no-game
@@ -21,7 +24,9 @@ Runs two independent passes each cycle:
      by season quality, but a reliever can never bump a starter out of a slot to make room — only
      another reliever or an empty/no-game arm can be bumped for one. Both must-start and in-action
      relievers are drawn from the FULL roster (bench included), not just today's active arms, so a
-     starter announced after the last cycle gets pulled in from the bench automatically.
+     starter announced after the last cycle gets pulled in from the bench automatically. Same rule
+     as hitters: if that still leaves a P slot empty, it's filled from the rest of the staff by
+     week-ahead forecast (ERA/WHIP + upcoming-start count) rather than left vacant.
 
 Either pass runs through fantasy_exec.set_lineup, the same eligibility-safe matcher every hand-made
 move uses; it only submits a transaction for slots that actually changed, so a pass that agrees with
@@ -54,6 +59,7 @@ from espn_utils import (  # noqa: E402
 )
 from espn_nightly_moves import (  # noqa: E402
     is_pitcher, score_hitter, score_pitcher, build_opp_sp_era_lookup,
+    forecast_score_hitter, forecast_score_pitcher,
 )
 from daily_projections import build_team_matchups, get_pitcher_starts_in_window  # noqa: E402
 from name_matcher import normalize  # noqa: E402
@@ -62,16 +68,21 @@ DRY_RUN = (os.getenv("FANTASY_TRIAGE_DRY_RUN") or "").strip() in ("1", "true", "
 PITCHER_CAPACITY = len(fantasy_exec.DEFAULT_PITCHER_SLOTS)  # 7 in this league
 
 
-def _triage(players, matchups, score, is_starting_today, seatable):
+def _triage(players, matchups, score, forecast_score, is_starting_today, seatable):
     """Decide the two sub-rosters (hitters, pitchers) that should be active. Returns
-    (hitter_names, pitcher_names, human-readable lines).
+    (hitter_names, pitcher_names, human-readable lines, forecast_fallback_ids).
 
     `seatable(names)` reports whether a full candidate roster can actually be placed within this
     league's real position slots (C/1B/2B/3B/SS/3xOF/UTIL) — a bench player scoring well is
     worthless as a replacement if his eligibility doesn't cover the slot going vacant (e.g. a
     2B-only bat can't replace a 3B). Pitchers skip this: every P slot in this league accepts any
-    pitcher, so there is nothing positional to check there."""
+    pitcher, so there is nothing positional to check there.
+
+    `forecast_fallback_ids` is the set of player_ids seated purely on the week-ahead forecast
+    because nobody eligible had a game today — deliberately active-with-no-game, not a sanity
+    violation, so the caller can exclude them from the no-game sanity check below."""
     lines = []
+    forecast_fallback_ids = set()
 
     def has_game(p):
         return bool(matchups.get(p["pro_team"], {}).get("has_game"))
@@ -106,11 +117,29 @@ def _triage(players, matchups, score, is_starting_today, seatable):
             used_ids.add(chosen["player_id"])
             keep_hitters.append(chosen)
             lines.append(f"{p['name']} ({reason}) comes out; {chosen['name']} takes the slot")
+            continue
+
+        # No seatable replacement with a game today. Don't leave the slot empty — fall back to
+        # the best bench bat by week-ahead forecast (has_game ignored) so a total off-day, or
+        # this process dying mid-run, never shows up as a hole in the lineup.
+        fallback_cands = sorted(
+            [b for b in bench_hitters if b["player_id"] not in used_ids],
+            key=forecast_score, reverse=True,
+        )
+        fallback = next(
+            (c for c in fallback_cands
+             if seatable([x["name"] for x in keep_hitters] + [c["name"]])),
+            None,
+        )
+        if fallback:
+            used_ids.add(fallback["player_id"])
+            keep_hitters.append(fallback)
+            forecast_fallback_ids.add(fallback["player_id"])
+            lines.append(f"{p['name']} ({reason}) comes out; {fallback['name']} takes the slot "
+                         "on next week's forecast — nobody eligible has a game today")
         else:
-            # No seatable replacement — bench him rather than force him back into his old slot.
-            # An empty slot and a gameless starter both score zero, but only one of them is
-            # honest about it, and leaving him "active" is what caused the exact eligibility
-            # deadlock this seatable() check exists to prevent (see 2026-07-28 postmortem).
+            # Truly nobody seatable at all (empty bench, or none eligible for the slot). Only
+            # then does the slot go empty — there's no one left to put in it.
             lines.append(f"{p['name']} is {reason} and comes out, "
                          "with nobody on the bench able to fill the slot")
 
@@ -139,6 +168,20 @@ def _triage(players, matchups, score, is_starting_today, seatable):
             break
         pitcher_starters.append(p)
 
+    # Still short a slot (a total off-day, etc.) — don't leave it empty. Fill from the rest of
+    # the eligible staff by week-ahead forecast, has_game ignored, same rule as hitters.
+    if len(pitcher_starters) < PITCHER_CAPACITY:
+        chosen_ids = {p["player_id"] for p in pitcher_starters}
+        fallback_pool = sorted(
+            [p for p in pitchers_eligible if p["player_id"] not in chosen_ids],
+            key=lambda pl: forecast_score(pl), reverse=True,
+        )
+        for p in fallback_pool:
+            if len(pitcher_starters) >= PITCHER_CAPACITY:
+                break
+            pitcher_starters.append(p)
+            forecast_fallback_ids.add(p["player_id"])
+
     was_active = {p["player_id"]: p for p in pitchers_all if p["is_active"]}
     now_active = {p["player_id"]: p for p in pitcher_starters}
     for pid, p in was_active.items():
@@ -154,12 +197,17 @@ def _triage(players, matchups, score, is_starting_today, seatable):
     for pid, p in now_active.items():
         if pid in was_active:
             continue
-        reason = "starting today" if pid in must_start_ids else "in relief, team plays today"
+        if pid in must_start_ids:
+            reason = "starting today"
+        elif has_game(p):
+            reason = "in relief, team plays today"
+        else:
+            reason = "on next week's forecast — no game today, but a slot can't sit empty"
         lines.append(f"{p['name']} takes a pitching slot ({reason})")
 
     hitter_names = [p["name"] for p in keep_hitters]
     pitcher_names = [p["name"] for p in pitcher_starters]
-    return hitter_names, pitcher_names, lines
+    return hitter_names, pitcher_names, lines, forecast_fallback_ids
 
 
 def triage():
@@ -184,6 +232,10 @@ def triage():
         return (score_pitcher(p, matchups, two_starts) if is_pitcher(p)
                 else score_hitter(p, matchups, opp_sp_lookup))
 
+    def forecast_score(p):
+        return (forecast_score_pitcher(p, two_starts) if is_pitcher(p)
+                else forecast_score_hitter(p))
+
     fx = fantasy_exec.get_roster()
     if not fx.get("ok"):
         return [], fx.get("error") or "could not read the roster for eligibility checking"
@@ -193,8 +245,8 @@ def triage():
         _, err = fantasy_exec.compute_moves(fx_roster, names)
         return err is None
 
-    hitter_names, pitcher_names, lines = _triage(
-        players, matchups, score, is_starting_today, seatable,
+    hitter_names, pitcher_names, lines, forecast_fallback_ids = _triage(
+        players, matchups, score, forecast_score, is_starting_today, seatable,
     )
     if not lines:
         log("Nothing to adjust — every active player is healthy and in action, "
@@ -207,14 +259,16 @@ def triage():
         return lines, (res.get("error") or res.get("detail") or "set_lineup refused")
     log(res.get("detail") or "lineup set")
 
-    # Sanity check — log-only, nothing here should ever fire given the passes above.
+    # Sanity check — log-only, nothing here should ever fire given the passes above. Forecast
+    # fallback picks are deliberately active with no game today, so they're excluded here.
     final_ids = {p["player_id"] for p in players if p["name"] in set(starters)}
     for p in players:
         if p["player_id"] not in final_ids:
             continue
         if p["injury"] in IL_STATUSES:
             lines.append(f"SANITY: {p['name']} is active and still shows {p['injury']}")
-        elif not matchups.get(p["pro_team"], {}).get("has_game"):
+        elif p["player_id"] not in forecast_fallback_ids and \
+                not matchups.get(p["pro_team"], {}).get("has_game"):
             lines.append(f"SANITY: {p['name']} is active with no game today")
 
     return lines, None

@@ -125,6 +125,30 @@ def score_pitcher(player, matchups, two_start_counts):
     return score
 
 
+def forecast_score_hitter(player):
+    """Score a hitter for the week ahead, ignoring today's game entirely. Last-resort fallback
+    for roster_triage: when nobody eligible has a game today, we'd rather seat the best bet for
+    the days ahead than leave the slot empty."""
+    season_ops = player["season_stats"].get("OPS", 0) or 0
+    proj_ops = player["proj_stats"].get("OPS", 0) or 0
+    score = 0.6 * season_ops + 0.4 * proj_ops
+    if player["injury"] in ("DTD", "QUESTIONABLE"):
+        score -= 0.3
+    return score
+
+
+def forecast_score_pitcher(player, two_start_counts):
+    """Score a pitcher for the week ahead, ignoring today's probable/has-game status. Same
+    last-resort role as forecast_score_hitter, for the pitching staff."""
+    season_era = player["season_stats"].get("ERA", 5.0) or 5.0
+    season_whip = player["season_stats"].get("WHIP", 1.5) or 1.5
+    score = 1.0 + max(0, (5.0 - season_era) * 0.2) + max(0, (1.50 - season_whip) * 0.5)
+    score += 0.3 * two_start_counts.get(player["name"], 0)
+    if player["injury"] in ("DTD", "QUESTIONABLE"):
+        score -= 0.3
+    return score
+
+
 def build_opp_sp_era_lookup(league):
     """Build {normalized_pitcher_name: season_ERA} across the entire league.
     Used to evaluate opp SP difficulty for hitter scoring."""
