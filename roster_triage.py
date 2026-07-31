@@ -138,10 +138,15 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
             lines.append(f"{p['name']} ({reason}) comes out; {fallback['name']} takes the slot "
                          "on next week's forecast — nobody eligible has a game today")
         else:
-            # Truly nobody seatable at all (empty bench, or none eligible for the slot). Only
-            # then does the slot go empty — there's no one left to put in it.
-            lines.append(f"{p['name']} is {reason} and comes out, "
-                         "with nobody on the bench able to fill the slot")
+            # Truly nobody else can take the slot (empty bench, or nobody eligible — e.g. an OF
+            # slot when every other bench bat is infield-only). Per Will's rule, an active roster
+            # slot must never go empty: an incumbent who can't play today still beats a hole, so
+            # he stays exactly where he was rather than getting benched into a vacancy. Not logged
+            # or posted — nothing is actually changing, and re-flagging the same stuck player
+            # every 30 minutes all day would just be noise.
+            used_ids.add(p["player_id"])
+            keep_hitters.append(p)
+            forecast_fallback_ids.add(p["player_id"])
 
     # --- Pitchers: full daily rebuild -------------------------------------------------------
     # Candidacy excludes anyone showing an IL-caliber injury even if ESPN hasn't moved him to the
