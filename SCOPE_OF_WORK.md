@@ -24,6 +24,64 @@ ingest + publish system). The pre-existing `espn_nightly_moves`,
 > waiver-scan-to-Edwin.** Three decisions captured in the 2026-07-20 entry
 > below; no code written yet (Will out of usage). The build depends on the
 > write path above being validated first.
+>
+> 🧹 **QUEUED CLEANUP (2026-07-21, deferred until after usage resets):**
+> remove the now-dead email alerting path — `send_email()` in
+> `espn_utils.py`, and `gmail_address` / `gmail_app_password` /
+> `smtp_host` / `smtp_port` / `recipient_email` from the iMac's
+> `config.json`. Discord has fully replaced it for baseball (see the
+> 2026-07-21 entry below); these are unused, not broken. Don't touch
+> until asked.
+
+## 2026-07-21 — baseball Discord alerting live; write path partially validated
+
+Deployed to the iMac (`~/fantasy-bot`, reachable via Tailscale SSH as
+`claudeserver@100.79.105.6` — **not a git repo**, deploy is `scp` file-by-file
+until a real deploy mechanism is decided). Session covered:
+
+- **Fixed the live stale-db bug.** `db_publish.py`'s retry logic (from
+  `ad0e16b`, previously undeployed) fixed a real failure: a 502 on the 32 MB
+  Contents-API PUT had left GitHub's `fantasy.db` a day stale while views kept
+  publishing. Re-pushed; confirmed the Pages copy is byte-identical to local
+  (32,174,080 bytes).
+- **Deployed the write-tooling layer for the first time.** `fantasy_exec.py`
+  (new portable module — see `INTEGRATION.md`), `set_lineup.py`,
+  `waiver_move.py`, `apply_pending.py` were on GitHub but had never reached
+  the iMac. Now deployed, syntax-checked on the box's Python 3.9.6.
+- **Found and fixed a real bug via live testing.** Dry-running the *current*
+  lineup back through `set_lineup()`/`fantasy_exec.set_lineup()` produced 7
+  phantom moves (`Soto OF->OF`, `Yamamoto P->P`, ...). Cause: `espn_api`
+  reports `lineupSlot` as a label, not a numeric ID, so every P collapses to
+  slot 11 and every OF to slot 5 on read — the matcher was free to shuffle
+  between them. Fixed in `fantasy_exec.py` (pin-then-match, plus a
+  from-label==to-label filter); `set_lineup.py` on the iMac has the same
+  underlying issue and was **left as-is** (see `INTEGRATION.md` §6 — two
+  copies of the eligibility solver now exist; collapse onto `fantasy_exec`
+  once it's fully proven).
+- **Write path status: read verified, POST still unverified.** `whoami()`,
+  `get_roster()`, and a `set_lineup(..., dry_run=True)` round-trip all ran
+  live and correctly. **No transaction has ever been submitted** — `add_drop`
+  and a real (non-empty) lineup change remain untested against live ESPN.
+  Per standing rule, first `--apply` must happen with Will present.
+- **Baseball Discord alerting is live**, replacing email. Added
+  `discord_webhooks.alerts` to `config.json`, deployed the current
+  `notify.py` (Discord-first, no email fallback — this is why deploying it
+  *before* the webhook existed would have made alerts silently log-only), and
+  confirmed with a real posted test message. `db_publish` / `mlb_ingest` /
+  `health_check` throttle state preserved; only the manual test key was
+  cleared.
+- **Sunday Funday confirmed ESPN Fantasy Football** (`league_id
+  1068408855`), not baseball — found via Gmail archaeology, `team_id` still
+  unknown. **Do not wire this league's ids into `fantasy_exec.py` as-is**:
+  `LeagueCtx.base_url` is hardcoded to the `flb` (baseball) API segment; a
+  `sport` field must be added to the per-league config first or its
+  transactions will target the wrong sport's endpoint. Cast Final Fantasy has
+  no trace anywhere yet — fully unresourced. Both leagues **parked** per
+  Will's explicit instruction; baseball only for now.
+- **No deploy mechanism exists yet.** `~/fantasy-bot` has no `.git`; a push to
+  GitHub `main` never reaches the iMac. Manual `scp` is the only path today.
+  Decision on `deploy.sh` vs. converting to a real git checkout is **open,
+  deliberately unmade** this session.
 
 ## 2026-07-20 — auto-lineup + waiver-scan design locked (NOT YET BUILT)
 
