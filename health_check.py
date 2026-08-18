@@ -32,7 +32,7 @@ from pathlib import Path
 
 DB_PATH = Path(os.path.expanduser("~/fantasy-bot/fantasy.db"))
 VIEWS_DIR = Path(os.path.expanduser("~/fantasy-bot/public/views"))
-PUBLIC_DB_URL = "https://willrphillips.github.io/fantasy-snapshots/data/fantasy.db"
+PUBLIC_DB_URL = "https://willrphillips.github.io/fantasy-snapshots/data/fantasy.db.gz"
 MY_TEAM = "Captain Phillips"
 
 VIEWS_MAX_AGE_SEC = 26 * 3600

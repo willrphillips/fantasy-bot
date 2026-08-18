@@ -19,10 +19,13 @@ Cron-friendly. Idempotent — files commit only if SHA changed.
 import argparse
 import base64
 import datetime as dt
+import gzip
 import json
 import logging
 import os
+import shutil
 import sqlite3
+import tempfile
 import time
 from pathlib import Path
 
@@ -196,14 +199,30 @@ def main():
     failed = []
 
     if not args.views_only:
-        # The db is the one file big enough to trip GitHub's push-rule validator, so it gets more
-        # patience than a 6 KB markdown view does.
-        r = commit_file(token, DB_PATH, "data/fantasy.db",
-                         "nightly: update fantasy.db", timeout=120, attempts=6)
-        if r is True:
-            pushed += 1
-        elif r is False:
-            failed.append("data/fantasy.db")
+        # The raw db (~43 MB) exceeds GitHub's Contents-API size ceiling (hard 422, non-retryable),
+        # so we gzip it first (~12 MB) and publish data/fantasy.db.gz. Consumers gunzip to recover
+        # the identical file. The db gets more patience than a 6 KB markdown view because even the
+        # compressed blob is large enough to occasionally trip the push-rule validator (403).
+        gz_path = None
+        try:
+            fd, gz_name = tempfile.mkstemp(suffix=".db.gz")
+            os.close(fd)
+            gz_path = Path(gz_name)
+            with open(DB_PATH, "rb") as src, gzip.open(gz_path, "wb", compresslevel=6) as dst:
+                shutil.copyfileobj(src, dst)
+            log.info(f"gzipped db {DB_PATH.stat().st_size} -> {gz_path.stat().st_size} bytes")
+            r = commit_file(token, gz_path, "data/fantasy.db.gz",
+                            "nightly: update fantasy.db.gz", timeout=120, attempts=6)
+            if r is True:
+                pushed += 1
+            elif r is False:
+                failed.append("data/fantasy.db.gz")
+        except Exception as e:
+            log.error(f"gzip/publish of db failed: {e}")
+            failed.append("data/fantasy.db.gz")
+        finally:
+            if gz_path and gz_path.exists():
+                gz_path.unlink()
 
     if not args.db_only and VIEWS_DIR.exists():
         for md in sorted(VIEWS_DIR.glob("*.md")):
