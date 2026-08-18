@@ -23,8 +23,10 @@ A data pipeline on his iMac pulls fresh MLB + ESPN data every night at
 access via these URLs (no auth required):
 
 - Database (SQLite, daily snapshots back to Opening Day for every
-  active MLB player):
-  `https://willrphillips.github.io/fantasy-snapshots/data/fantasy.db`
+  active MLB player), gzip-compressed since 2026-08-18 (the raw file
+  outgrew GitHub's API size limit; gunzip after download to get the
+  identical SQLite file):
+  `https://willrphillips.github.io/fantasy-snapshots/data/fantasy.db.gz`
 - League state (all 10 rosters, standings, matchup, top-50 FAs):
   `https://willrphillips.github.io/fantasy-snapshots/snapshot.md`
 - Pre-baked markdown reports (regenerated nightly):
