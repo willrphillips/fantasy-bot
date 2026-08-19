@@ -35,3 +35,4 @@ applied_log.jsonl
 *.tmp
 *.tmp.*
 .flowstatus.json
+cache/
