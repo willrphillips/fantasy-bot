@@ -33,6 +33,29 @@ ingest + publish system). The pre-existing `espn_nightly_moves`,
 > 2026-07-21 entry below); these are unused, not broken. Don't touch
 > until asked.
 
+## 2026-08-30 — `roster_triage.py` is driven by Edwin, not by a timer
+
+Recorded here because this repo's docs do not say who runs this script, and that
+gap cost a day of lineup coverage.
+
+`roster_triage.py` is **not** on a systemd timer and never was. It is launched by
+`fantasy_triage_loop()` in Edwin's `bot.py` (repo `willrphillips/edwin`), every 30
+minutes, from 30 minutes before the day's first pitch until the last game goes
+final. `systemctl list-timers 'fantasy-*'` will never show it, so do not conclude
+from that list that the check does not exist. The five things that ARE timers are
+ingest 3:30, views 4:30, anomaly 4:45, health 6:00 and the 2026-10-01 shutdown;
+brief and publish are also Edwin-driven, in-process.
+
+On 2026-08-30 the loop was found dead, having logged nothing either way, and
+Edwin's own brief never mentioned the job at all. Fixed on the Edwin side in
+`743265d`: every run logs, each tick is wrapped so one exception cannot end the
+task, and the triage now has an on/off switch (`/triage status|on|off|now`, state
+in `~/codex/edwin/state/fantasy-triage-enabled.txt`, missing file means on). Full
+write-up in that repo's `SCOPE_OF_WORK.md` under the same date.
+
+`FANTASY_TRIAGE_DRY_RUN=1 python3 roster_triage.py` remains the safe way to ask
+what the triage would do right now; it submits nothing and posts nothing.
+
 ## 2026-07-21 — baseball Discord alerting live; write path partially validated
 
 Deployed to the iMac (`~/fantasy-bot`, reachable via Tailscale SSH as
