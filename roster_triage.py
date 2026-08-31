@@ -87,6 +87,13 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
     def has_game(p):
         return bool(matchups.get(p["pro_team"], {}).get("has_game"))
 
+    def locked(p):
+        """ESPN freezes a player's slot the moment his game starts. A move involving him is
+        answered with HTTP 200 and then silently ignored, so proposing one produces a phantom
+        change that is announced as done, never happens, and comes back every 30 minutes for the
+        rest of the day. Found 2026-08-30, with two Final games swapping arms all evening."""
+        return bool(matchups.get(p["pro_team"], {}).get("started"))
+
     non_il = [p for p in players if not p["on_il"]]
     hitters_all = [p for p in non_il if not is_pitcher(p)]
     pitchers_all = [p for p in non_il if is_pitcher(p)]
@@ -95,8 +102,10 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
     active_hitters = [p for p in hitters_all if p["is_active"]]
     bench_hitters = [p for p in hitters_all if p["on_bench"]]
 
+    # A locked bat stays put even if he is hurt or his game is over: ESPN will not move him,
+    # and pretending otherwise is how the phantom-change loop starts.
     ok_ids = {p["player_id"] for p in active_hitters
-              if p["injury"] not in IL_STATUSES and has_game(p)}
+              if locked(p) or (p["injury"] not in IL_STATUSES and has_game(p))}
     keep_hitters = [p for p in active_hitters if p["player_id"] in ok_ids]
     flagged_hitters = [p for p in active_hitters if p["player_id"] not in ok_ids]
 
@@ -105,7 +114,8 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
         reason = p["injury"] if p["injury"] in IL_STATUSES else "no game today"
         cands = sorted(
             [b for b in bench_hitters
-             if b["player_id"] not in used_ids and b["injury"] not in IL_STATUSES and has_game(b)],
+             if b["player_id"] not in used_ids and b["injury"] not in IL_STATUSES
+             and has_game(b) and not locked(b)],
             key=score, reverse=True,
         )
         chosen = next(
@@ -123,7 +133,7 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
         # the best bench bat by week-ahead forecast (has_game ignored) so a total off-day, or
         # this process dying mid-run, never shows up as a hole in the lineup.
         fallback_cands = sorted(
-            [b for b in bench_hitters if b["player_id"] not in used_ids],
+            [b for b in bench_hitters if b["player_id"] not in used_ids and not locked(b)],
             key=forecast_score, reverse=True,
         )
         fallback = next(
@@ -152,7 +162,14 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
     # Candidacy excludes anyone showing an IL-caliber injury even if ESPN hasn't moved him to the
     # IL slot yet — the same protection the hitter pass gets. `pitchers_all` (unfiltered) is kept
     # around only to label removal reasons below.
-    pitchers_eligible = [p for p in pitchers_all if p["injury"] not in IL_STATUSES]
+    # The rebuild happens AROUND the arms whose games have started: an active one keeps his slot
+    # and spends capacity, a benched one is simply unavailable today. Without this the nightly
+    # rebuild keeps re-ranking finished games and asking ESPN for swaps it will never make.
+    locked_active = [p for p in pitchers_all if p["is_active"] and locked(p)]
+    locked_ids = {p["player_id"] for p in pitchers_all if locked(p)}
+
+    pitchers_eligible = [p for p in pitchers_all
+                         if p["injury"] not in IL_STATUSES and p["player_id"] not in locked_ids]
     must_start = [p for p in pitchers_eligible if is_starting_today(p)]
     must_start_ids = {p["player_id"] for p in must_start}
     relief_in_action = sorted(
@@ -160,14 +177,15 @@ def _triage(players, matchups, score, forecast_score, is_starting_today, seatabl
         key=score, reverse=True,
     )
 
-    if len(must_start) > PITCHER_CAPACITY:
+    open_capacity = max(0, PITCHER_CAPACITY - len(locked_active))
+    if len(must_start) > open_capacity:
         must_start.sort(key=score, reverse=True)
-        overflow = must_start[PITCHER_CAPACITY:]
-        must_start = must_start[:PITCHER_CAPACITY]
+        overflow = must_start[open_capacity:]
+        must_start = must_start[:open_capacity]
         lines.append("More probable starters today than pitcher slots (" +
                      ", ".join(p["name"] for p in overflow) + " couldn't all fit)")
 
-    pitcher_starters = list(must_start)
+    pitcher_starters = list(locked_active) + list(must_start)
     for p in relief_in_action:
         if len(pitcher_starters) >= PITCHER_CAPACITY:
             break
@@ -224,7 +242,9 @@ def triage():
         return [], f"team {TEAM_ID} not found in league"
 
     players = parse_roster(my_team)
-    matchups = build_team_matchups()
+    # force_refresh, always: the schedule is cached once a day, and a copy written at 4am says
+    # every game is still in Preview, which would hide every lock this pass depends on.
+    matchups = build_team_matchups(force_refresh=True)
 
     def is_starting_today(p):
         probable = matchups.get(p["pro_team"], {}).get("probable_pitcher")
@@ -263,6 +283,24 @@ def triage():
     if not res.get("ok"):
         return lines, (res.get("error") or res.get("detail") or "set_lineup refused")
     log(res.get("detail") or "lineup set")
+
+    # ESPN answers 200 to a move it then ignores, so a successful POST is not evidence the
+    # lineup changed. Read the roster back and believe only what actually moved. Same lesson as
+    # the morning brief, which stopped claiming an add/drop was done before ESPN confirmed it.
+    if not DRY_RUN:
+        wanted = res.get("moves") or []
+        after = fantasy_exec.get_roster()
+        if after.get("ok") and wanted:
+            slot_now = {p["player_id"]: p["slot"] for p in after["roster"]}
+            stuck = [m for m in wanted if slot_now.get(m["player_id"]) != m["to_slot"]]
+            if stuck and len(stuck) == len(wanted):
+                # Nothing took. Say nothing rather than post a change that did not happen.
+                log("ESPN accepted the request and applied none of it: "
+                    + ", ".join(m["name"] for m in stuck))
+                return [], None
+            if stuck:
+                lines.append("ESPN did not apply: "
+                             + ", ".join(m["name"] for m in stuck))
 
     # Sanity check — log-only, nothing here should ever fire given the passes above. Forecast
     # fallback picks are deliberately active with no game today, so they're excluded here.

@@ -95,11 +95,12 @@ def fetch_schedule(date_str=None, force_refresh=False):
     return data
 
 
-def build_team_matchups(date_str=None):
+def build_team_matchups(date_str=None, force_refresh=False):
     """Returns dict keyed by ESPN team abbrev:
     {
         'NYY': {
             'has_game': True,
+            'started': False,
             'opponent': 'Bal',
             'home': True,
             'probable_pitcher': 'Max Fried',
@@ -108,14 +109,20 @@ def build_team_matchups(date_str=None):
         },
         'Wsh': {'has_game': False, ...},
     }
+
+    `started` is True once that team's game is past Preview. ESPN freezes a player's roster
+    slot the moment his game begins, so a caller deciding lineups mid-day must treat those
+    players as immovable. Pass `force_refresh=True` to get it: the schedule is cached once per
+    day, and a cached copy written in the morning says Preview all night (Will, 2026-08-30).
     """
-    data = fetch_schedule(date_str)
+    data = fetch_schedule(date_str, force_refresh=force_refresh)
     result = {}
 
     # Initialize all teams as no-game
     for espn_abbrev in ESPN_TO_MLB_TEAM:
         result[espn_abbrev] = {
             "has_game": False,
+            "started": False,
             "opponent": None,
             "home": None,
             "probable_pitcher": None,
@@ -141,8 +148,14 @@ def build_team_matchups(date_str=None):
         away_sp = teams.get("away", {}).get("probablePitcher", {}).get("fullName")
         game_time = _game_time_et(g.get("gameDate", ""))
 
+        # A postponed game reads as Final but never locks anyone, so it stays movable.
+        status = g.get("status") or {}
+        started = (status.get("abstractGameState") != "Preview"
+                   and not str(status.get("detailedState") or "").startswith("Postponed"))
+
         result[home_abbrev] = {
             "has_game": True,
+            "started": started,
             "opponent": away_abbrev,
             "home": True,
             "probable_pitcher": home_sp,
@@ -151,6 +164,7 @@ def build_team_matchups(date_str=None):
         }
         result[away_abbrev] = {
             "has_game": True,
+            "started": started,
             "opponent": home_abbrev,
             "home": False,
             "probable_pitcher": away_sp,
