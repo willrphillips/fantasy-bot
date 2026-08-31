@@ -1,15 +1,22 @@
 # INTEGRATION.md — handing fantasy-bot's execution layer to Edwin
 
-This document is the package spec for running fantasy-bot's ESPN execution
-module on a box that is **not** the iMac. It is written to be handed to Edwin
-(the user's separate always-on assistant on the Hetzner box) as-is.
+> **Status: done. This handoff completed on 2026-07-21.** Edwin now owns the
+> whole pipeline, not just the execution layer, and the runtime is a real git
+> checkout at `/home/edwincode/edwin-repos/fantasy-bot` on atlas-cloud. The
+> "copy these files across" framing below is historical. What still matters,
+> and is still current, is §3 (the `fantasy_exec.py` function contract) and
+> §6 (the duplicate eligibility solvers, cleanup still owed). Read
+> `MIGRATION_2026-07-21.md` for what actually shipped.
 
-Nothing in this repo reaches out to Edwin's box. This is a spec plus one
-portable file; the user copies them across.
+This document was the package spec for running fantasy-bot's ESPN execution
+module on a box that is **not** the iMac. It was written to be handed to Edwin
+(the user's separate always-on assistant on the Hetzner box) as-is.
 
 ---
 
 ## 1. The split
+
+As written in 2026-07 (historical):
 
 | Concern | Who | Where |
 |---|---|---|
@@ -18,11 +25,13 @@ portable file; the user copies them across.
 | **Reading** the data, analysis, talking to the user | **Edwin** | Hetzner, Discord |
 | **Executing** the approved ESPN transaction | **Edwin** | Hetzner, via `fantasy_exec.py` |
 
-The iMac is **not** in the execution path. It produces data and publishes it.
-Edwin reads that published data over plain HTTPS (no auth) and acts.
+As it actually is since 2026-07-21: **every row is Edwin, on atlas-cloud.**
+The split no longer exists. He ingests, publishes, reads and executes, and he
+reads the db off local disk rather than over HTTPS. The public URLs remain the
+read path for Claude Chat and for Claude Code on the PC.
 
-`apply_pending.py` (the git-queue executor on the iMac) still exists as a
-manual/fallback path. It is no longer the primary route.
+`apply_pending.py` (the git-queue executor) still exists as a manual/fallback
+path. It is no longer the primary route.
 
 ---
 

@@ -53,30 +53,56 @@ and is never pulled here — it only receives `db_publish.py` output.
 
 ## What this is
 
-A data layer for ESPN fantasy baseball. The iMac "Cocky-Claude" pulls
-MLB Stats API + Baseball Savant + ESPN league state every night and
-stores a daily season-to-date snapshot per player. `fantasy.db` plus
-seven pre-baked markdown views are published to a public GitHub repo
-(`willrphillips/fantasy-snapshots`) at the end of every nightly cron
-run. From there, both Claude Chat and Claude Code can read the data
-without auth.
+A data layer for ESPN fantasy baseball. The Hetzner box **atlas-cloud**
+pulls MLB Stats API + Baseball Savant + ESPN league state every night and
+stores a daily season-to-date snapshot per player. `fantasy.db` plus the
+pre-baked markdown views are published to a public GitHub repo
+(`willrphillips/fantasy-snapshots`) every morning. From there, both Claude
+Chat and Claude Code can read the data without auth.
+
+**Who owns this: Edwin.** The runtime is his, at
+`/home/edwincode/edwin-repos/fantasy-bot` (symlinked `~/fantasy-bot`), under
+his own venv. Analysis and roster moves are his to make unprompted; trades
+and anything spending money wait for Will. The iMac "Cocky-Claude" ran all
+of this until **2026-07-21** and is historical from that date, not current:
+see `MIGRATION_2026-07-21.md`.
 
 The owner of the league is "Captain Phillips" (team_id=9, league_id
 2057904545, season=2026, 10-team head-to-head categories).
 
 ## Data flow
 
+All times ET. Two different schedulers, and the difference matters.
+
+**systemd timers on atlas-cloud** (`systemctl list-timers 'fantasy-*'`):
+
 ```
-3:00  espn_nightly_moves.py + league_snapshot.py   (pre-existing, untouched)
-3:30  mlb_ingest.py            -> fantasy.db rows for every tracked player
-4:30  views.py                  -> public/views/*.md
-4:45  anomaly.py                -> public/views/anomaly_digest.md
-5:00  db_publish.py             -> push fantasy.db + views to GitHub
-6:00  health_check.py           -> independent watchdog, fails -> email
+3:30  mlb_ingest.py     -> fantasy.db rows for every tracked player
+4:30  views.py          -> public/views/*.md
+4:45  anomaly.py        -> public/views/anomaly_digest.md
+6:00  health_check.py   -> independent watchdog
 ```
 
-The cron lives on the iMac. Failures are reported by email (failure-only,
-throttled to one alert per script per day via `~/fantasy-bot/.alert_state`).
+**In-process loops inside Edwin's `bot.py`**, which no timer list will show:
+
+```
+4:00       nightly_advisor.py -> the morning brief
+5:07       db_publish.py      -> gzipped db + views to GitHub
+every 30m  roster_triage.py   -> in-game lineup fixes, from 30 min before the
+                                 day's first pitch until the last game is final
+```
+
+If you are asking "is job X scheduled?", `list-timers` answers only half the
+question. Check `fantasy_*_loop()` in `bot.py` for the other half.
+
+Failures post to Discord (`notify.py`), throttled to one alert per script per
+day via `~/fantasy-bot/.alert_state`. Email alerting was retired 2026-07-21;
+`send_email` is `false` in the live config.
+
+The roster triage has an on/off switch: `/triage status|on|off|now` in Discord,
+or write `on`/`off` into `~/codex/edwin/state/fantasy-triage-enabled.txt`. A
+missing file means on. `journalctl -u edwin.service | grep fantasy-triage` shows
+every run, and an empty result on a game day means it is not running.
 
 ## Universe
 
@@ -134,7 +160,7 @@ health()                                     # freshness + row counts
 ```
 
 `fantasy_lib` honors the `FANTASY_DB` env var so the same code works on
-the iMac (live db) or on any machine with a downloaded copy.
+atlas-cloud (live db) or on any machine with a downloaded copy.
 
 ## Three defects fixed (load-bearing — don't undo)
 
@@ -173,9 +199,23 @@ the constraints below.
 - **Savant CSV has a UTF-8 BOM** that breaks `csv.DictReader` quoted-
   field parsing. `fetch_savant_csv` strips it. If you ever change the
   Savant pull, keep the strip.
-- **Alert subjects and bodies are ASCII-only.** `espn_utils.send_email`
-  uses `smtplib.sendmail(msg.as_string())` which fails on non-ASCII in
-  the Subject header.
+- **Alert subjects and bodies are ASCII-only.** Historical, from the email
+  era: `espn_utils.send_email` used `smtplib.sendmail(msg.as_string())`,
+  which fails on non-ASCII in the Subject header. Alerts go to Discord now
+  and the constraint no longer binds, but the function is still there and
+  still has the flaw if anything ever calls it again.
+- **A 200 from ESPN is not proof the change happened.** ESPN freezes a
+  player's roster slot the moment his game starts, answers the move `200`,
+  and silently ignores it. `set_lineup` and `add_drop` now read the roster
+  back and return `applied` / `stuck` / `verified` / `pending`; believe
+  those, never bare `ok`. A `WAIVER` claim is legitimately pending and
+  cannot be confirmed by a read-back; a `FREEAGENT` add can. Fixed
+  2026-08-30 after the triage spent an evening announcing a swap of two
+  players whose games were already final.
+- **The MLB schedule is cached once per calendar day.** `fetch_schedule()`
+  writes `cache/schedule_YYYY-MM-DD.json` and reuses it, so a copy written
+  by the 4am job says every game is still `Preview` at 9pm. Anything that
+  cares whether a game has started must pass `force_refresh=True`.
 - **Statcast inserts are `INSERT OR REPLACE` on UNIQUE(mlb_id, date,
   side).** A bad `mlb_id` value (e.g., the year "2026") will collapse
   every row of a side into one. If statcast row count looks tiny,
@@ -223,12 +263,21 @@ Views:
 | `db_publish.py` | Push fantasy.db + views to GitHub via Contents API. |
 | `health_check.py` | Independent watchdog. Reads only; alerts on freshness, coverage, errors, URL reachability. |
 | `notify.py` | `alert(script, subject, body)`. Failure-only, throttled. |
-| `espn_utils.py` | ESPN league plumbing (cookies, transactions, `send_email`). Lives on the iMac; included here for reference. |
+| `espn_utils.py` | ESPN league plumbing (cookies, transactions, the retired `send_email`). |
+| `fantasy_exec.py` | The write path: `set_lineup`, `add_drop`, `propose_trade`, `get_roster`, `whoami`. Portable, config-driven, dry-run by default. Read `INTEGRATION.md` before changing it. |
+| `roster_triage.py` | In-game lineup fixes. Run by Edwin's `bot.py` every 30 min inside the game window, NOT by a timer. `FANTASY_TRIAGE_DRY_RUN=1` to see what it would do. |
+| `nightly_advisor.py` | The 4:00 morning brief Edwin posts to Discord. |
+| `daily_projections.py` | MLB schedule, probable pitchers, and per-team `has_game` / `started`. Caches once a day; pass `force_refresh=True` for live game state. |
+| `espn_nightly_moves.py` | Overnight lineup + waiver pass. Scoring helpers here are shared with the triage. |
+| `playoff_odds.py` | Scenario tool for quantifying a roster/trade/waiver move. |
+| `set_lineup.py`, `waiver_move.py`, `apply_pending.py` | Older CLI wrappers, superseded by `fantasy_exec.py`. See `INTEGRATION.md` §6. |
 
 ## When something breaks
 
-1. Check `~/fantasy-bot/ingest.log` (or `views.log`, `publish.log`,
-   `health.log`) — every cron run appends.
+1. On atlas-cloud, check `~/fantasy-bot/ingest.log` (or `publish.log`),
+   `journalctl -u fantasy-ingest.service` and friends for the timer jobs,
+   and `journalctl -u edwin.service` for the brief, the publish and the
+   roster triage.
 2. `pull_log` table has structured counts per run. The most recent row
    tells you what happened last night.
 3. `health_check.py` is the canonical "is everything OK" command —

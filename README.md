@@ -26,15 +26,21 @@ canonical project context, schema, and load-bearing decisions.
 
 ## Initial setup
 
+> **Historical.** These steps describe the original 2026-05 bring-up on the
+> iMac "Cocky-Claude". The runtime moved to Hetzner (atlas-cloud) on
+> 2026-07-21 and the iMac is no longer the deploy target. Kept because the
+> backfill and schema steps are still the right recipe on a fresh box; read
+> `MIGRATION_2026-07-21.md` first.
+
 ```bash
-# On Cocky-Claude (the iMac)
-cd ~/fantasy-bot
+# On atlas-cloud, as edwincode
+cd ~/fantasy-bot          # symlink to ~/edwin-repos/fantasy-bot, a real git clone
 
-# 1. Make sure deps are installed in the existing venv
-./venv/bin/pip install requests   # espn_api already there
+# 1. Install deps into the venv
+./venv/bin/pip install -r requirements.txt
 
-# 2. Drop the files into place (SCP from your laptop)
-#    db_init.py, mlb_ingest.py, fantasy_lib.py, views.py, db_publish.py
+# 2. Deploy is `git pull`, not scp. The runtime IS a checkout.
+git pull
 
 # 3. Create the schema
 ./venv/bin/python3 db_init.py
@@ -48,31 +54,29 @@ nohup ./venv/bin/python3 mlb_ingest.py --backfill > ~/fantasy-bot/backfill.log 2
 ./venv/bin/python3 views.py
 ./venv/bin/python3 db_publish.py
 
-# 6. Add the nightly cron entry (see below)
+# 6. The schedule is already in place (see below)
 ```
 
-## Cron entry
+## Schedule
 
-Add to `crontab -e`:
+No crontab. Four systemd timers plus three loops inside Edwin's bot.
 
 ```
-# Existing 3 AM jobs (nightly_moves + snapshot) stay as-is.
+# systemd, on atlas-cloud, pinned America/New_York.  systemctl list-timers 'fantasy-*'
+fantasy-ingest.timer    03:30 ET   mlb_ingest.py
+fantasy-views.timer     04:30 ET   views.py
+fantasy-anomaly.timer   04:45 ET   anomaly.py
+fantasy-health.timer    06:00 ET   health_check.py
+fantasy-shutdown.timer  2026-10-01 end of season
 
-# 3:30 AM ET — daily MLB+ESPN ingest
-30 3 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 mlb_ingest.py >> /Users/claudeserver/fantasy-bot/ingest.log 2>&1
-
-# 4:30 AM ET — regenerate pre-baked views
-30 4 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 views.py >> /Users/claudeserver/fantasy-bot/views.log 2>&1
-
-# 4:45 AM ET — build the anomaly digest (writes anomaly_digest.md into the views dir)
-45 4 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 anomaly.py >> /Users/claudeserver/fantasy-bot/anomaly.log 2>&1
-
-# 5:00 AM ET — push db + views to GitHub
-0 5 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 db_publish.py >> /Users/claudeserver/fantasy-bot/publish.log 2>&1
-
-# 6:00 AM ET — independent watchdog (alerts on any failure)
-0 6 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 health_check.py >> /Users/claudeserver/fantasy-bot/health.log 2>&1
+# inside edwin.service, so `list-timers` will never show these
+04:00       nightly_advisor.py   morning brief
+05:07       db_publish.py        gzipped db + views to GitHub
+every 30m   roster_triage.py     in-game lineup fixes, game window only
 ```
+
+Unit files live in `/etc/systemd/system/`. The old iMac crontab is recorded
+in `MIGRATION_2026-07-21.md`; do not re-create it.
 
 `anomaly.py` writes into the same `public/views/` dir, so `db_publish.py`
 (which globs `*.md`) picks it up automatically — no publish change needed.
@@ -85,7 +89,10 @@ Add to `crontab -e`:
 4:30 AM  views.py runs                                 -> public/views/*.md
 4:45 AM  anomaly.py runs                               -> public/views/anomaly_digest.md
 5:00 AM  db_publish.py pushes to GitHub                -> data/fantasy.db + views/*.md
-6:00 AM  health_check.py runs                          -> failure-only email alert
+6:00 AM  health_check.py runs                          -> failure-only Discord alert
+
+...then, all day:
+every 30m  roster_triage.py                             -> in-game lineup fixes
 ```
 
 ## Public URLs
@@ -108,7 +115,7 @@ Pre-baked views:
   https://willrphillips.github.io/fantasy-snapshots/views/anomaly_digest.md
 ```
 
-## Claude Code workflow (on PC, not iMac)
+## Claude Code workflow (on the PC, not on atlas-cloud)
 
 ```bash
 git clone https://github.com/willrphillips/fantasy-snapshots

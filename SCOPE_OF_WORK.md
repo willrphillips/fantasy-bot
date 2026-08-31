@@ -33,6 +33,53 @@ ingest + publish system). The pre-existing `espn_nightly_moves`,
 > 2026-07-21 entry below); these are unused, not broken. Don't touch
 > until asked.
 
+## 2026-08-30 — write path hardened, and the iMac-era docs finally rewritten
+
+Closing out the same night's work.
+
+**Every write now proves itself.** `set_lineup` already had the read-back added
+for the triage; `add_drop` and `propose_trade` had their own versions of the
+same wrong assumption. All three fixed in `276ca64`:
+
+| Function | What it returns now |
+|---|---|
+| `set_lineup` | `applied`, `stuck`, `verified` from a roster read-back |
+| `add_drop` (FREEAGENT) | `verified`, and `ok=False` if the roster did not change |
+| `add_drop` (WAIVER) | `pending=True` — deliberately unconfirmable, a claim sits until waivers process |
+| `propose_trade` | `pending=True`, and says nothing changes until the other manager accepts |
+
+Callers should believe those fields, never bare `ok`. The triage now reads
+`stuck` off the result instead of making its own second round-trip. The
+read-back branches have **not** run against live ESPN: every game was final
+by the time they were written, so there was no legal move to test them with.
+First real move of the next game day exercises them.
+
+**Docs rewritten.** `MIGRATION_2026-07-21.md` §5 listed seven files still
+describing the iMac world as current, six weeks after it stopped being true.
+Rewritten under that section's own rule, which is that the iMac is historical
+and must not be deleted from the record: `CLAUDE.md`, `README.md`,
+`OPERATING_RUNBOOK.md`, `CHAT_PROJECT_INSTRUCTIONS.md`, `INTEGRATION.md` and
+`fantasy_baseball_instructions.md` now describe atlas-cloud, systemd timers,
+Edwin's in-process loops and Discord alerting, with the iMac kept as a dated
+historical section in each. The only surviving `claudeserver` / `crontab`
+strings are the ones deliberately labelled historical or saying "there is no
+crontab".
+
+**The correction that mattered most:** every one of those docs implied the
+schedule was one thing you could list. It is two. Four systemd timers, and
+three loops inside `edwin.service` that `systemctl list-timers` will never
+show. That gap is precisely why the roster triage went unnoticed, and every
+rewritten doc now says so explicitly.
+
+**Still open, deliberately not touched tonight:**
+- The 3:00 AM `espn_nightly_moves.py` + `league_snapshot.py` pair and the
+  Sunday `espn_weekly_report.py` email have no systemd equivalent on
+  atlas-cloud. Port or retire, Will's call.
+- The iMac's own crontab state is UNVERIFIED from this session. Decommission
+  is a separate, destructive job.
+- Where Edwin's gate line should sit (currently: roster moves free, trades and
+  money wait for Will) has not been revisited.
+
 ## 2026-08-30 — the triage was announcing lineup moves ESPN had already locked
 
 Found while checking whether the 30-minute triage was running at all. It was.

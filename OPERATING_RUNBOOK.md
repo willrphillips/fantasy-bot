@@ -16,7 +16,7 @@ Network access differs by where Claude runs. Probe before trusting any URL.
 
 | Regime | Reachable | Live MLB pulls? |
 |---|---|---|
-| **A — iMac "Cocky-Claude"** | github.io, statsapi.mlb.com, baseballsavant | ✅ Yes — full live process |
+| **A — atlas-cloud (Hetzner)** | github.io, statsapi.mlb.com, baseballsavant, ESPN | ✅ Yes — full live process. This is the runtime since 2026-07-21; the iMac "Cocky-Claude" held this role before that date. |
 | **B — Claude Code on web / cloud container** | **only** `github.com` + `raw.githubusercontent.com` | ❌ No — statsapi / Savant / github.io all return 403 |
 
 **Regime B URL swaps** (`github.io` is blocked → use raw):

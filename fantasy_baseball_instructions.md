@@ -10,9 +10,9 @@ It supersedes the older `fantasy baseball instructions.txt`. All behavior rules 
 
 ---
 
-# ⚡ DATA SOURCES — Two Pipelines, One Cocky-Claude
+# ⚡ DATA SOURCES — Two Pipelines, One Box
 
-There are two independent data systems on the iMac. Both publish to public GitHub. **Use the right one for the question.**
+There are two independent data systems, both on atlas-cloud (the Hetzner box, run by Edwin). Both publish to public GitHub. **Use the right one for the question.** They ran on the iMac "Cocky-Claude" until 2026-07-21.
 
 ## System 1 — `snapshot.md` (league state)
 
@@ -46,7 +46,7 @@ Both URLs are public GitHub Pages (no auth). Fetch directly with web tools.
 
 **Claude Chat (claude.ai web, iOS, desktop):**
 - Can fetch any of the public URLs above with its web tools.
-- **Cannot SSH into Cocky-Claude.** Never instruct Will to "SSH and run a query" — assume he is on his phone.
+- **Cannot SSH into atlas-cloud.** Never instruct Will to "SSH and run a query" — assume he is on his phone. If something needs a shell on the box, that is Edwin's job, not Will's.
 - **Cannot query `fantasy.db` directly** (no SQLite runtime). The .db file is downloadable, but Chat can't open it.
 - For 90% of questions the seven pre-baked views are sufficient. For the remaining 10% (ad-hoc per-player windows, custom comparisons), ask Will to run the query in his Claude Code session and paste the result, OR fall back to live `statsapi.mlb.com` calls via the web tools.
 
@@ -192,7 +192,7 @@ Claude must NEVER rely on training-data stats, multi-day-old hot-streak articles
 
 Any of the following, in roughly descending order of preference for a given question:
 
-1. **`fantasy.db`** — the on-iMac SQLite cache, refreshed nightly at 3:30 AM ET from `statsapi.mlb.com`. Contains daily season-to-date snapshots back to 2026-03-26 for every active MLB player. **Fast, exact, and exactly as fresh as the nightly cron's last successful run.** Cite the `latest_pull` date when using it. Use it for: season lines, L7/L14/L30 windows, multi-player comparisons (hot bats, regression watch), advanced metrics (xwOBA / Barrel% / FIP via statcast table) for any date ≥ 2026-05-21.
+1. **`fantasy.db`** — the SQLite cache on atlas-cloud, refreshed nightly at 3:30 AM ET from `statsapi.mlb.com`. Contains daily season-to-date snapshots back to 2026-03-26 for every active MLB player. **Fast, exact, and exactly as fresh as the last successful nightly run.** Cite the `latest_pull` date when using it. Use it for: season lines, L7/L14/L30 windows, multi-player comparisons (hot bats, regression watch), advanced metrics (xwOBA / Barrel% / FIP via statcast table) for any date ≥ 2026-05-21.
 
 2. **MLB Stats API** (`https://statsapi.mlb.com/api/v1/`, free, no auth, official) — use for: anything fantasy.db can't answer, especially **game logs and same-day game results** (fantasy.db lags by ~1 day because it snapshots end-of-day-prior). Required endpoints:
    - Season totals: `/people/{id}/stats?stats=season&group=hitting&season=2026`
@@ -728,41 +728,43 @@ Recommendations should aim to *push targeted middle categories into the top 3 wi
 
 ## Infrastructure
 
-### The server: Cocky-Claude
+### The server: atlas-cloud
 
-A 2015 Retina iMac running macOS, used as a 24/7 automation host.
+A Hetzner cloud box running Ubuntu 26.04, always on. Edwin lives here and owns
+this pipeline.
 
-- **Hostname:** `Cocky-Claude.local`
-- **macOS user:** `claudeserver`
-- **Tailscale IP:** historically `100.125.74.109`, more recently `100.98.3.122` — **Tailscale IPs can change.** If SSH times out, run `tailscale ip` on the iMac console to get the current address.
-- **Location:** Richmond, VA
-- **Hardware:** 3.2GHz quad-core Intel, 8GB DDR3, AMD Radeon R9 M360
+- **Host:** `atlas-cloud`, `178.156.154.93`
+- **User:** `edwincode`
+- **Python:** 3.14.4, venv at `~/fantasy-bot/venv`
+- **Runtime dir:** `~/fantasy-bot` → `~/edwin-repos/fantasy-bot`, a real git clone
+- **Scheduler:** systemd timers plus in-process loops in `edwin.service`
 
 ### SSH access
 
-```bash
-ssh claudeserver@100.98.3.122
-```
-
-For convenience, Will can add this to his Windows laptop's `~/.ssh/config`:
+From Will's PC, already configured in `~/.ssh/config`:
 
 ```
-Host cocky
-    HostName 100.98.3.122
-    User claudeserver
+Host atlas
+    HostName 178.156.154.93
+    User edwincode
+    IdentityFile ~/.ssh/atlas_ed25519
 ```
 
-Then `ssh cocky` works.
+Then `ssh atlas` works. No Tailscale dependency and no sleep policy to worry
+about: a cloud box does not nap.
 
-### Sleep policy
+### Historical: Cocky-Claude (retired 2026-07-21)
 
-The iMac runs `caffeinate` so it never sleeps. Verify with `pmset -g | grep -i sleep`. The pipeline relies on this.
+A 2015 Retina iMac in Richmond, VA, macOS user `claudeserver`, reached over
+Tailscale, kept awake with `caffeinate`. It ran this entire pipeline from
+2026-05-19 until the migration. Recorded here so old logs and old commits still
+make sense; it is not the runtime and must not be deployed to.
 
 ---
 
 ## The Pipelines
 
-All scripts live in `/Users/claudeserver/fantasy-bot/` on Cocky-Claude.
+All scripts live in `~/fantasy-bot/` on atlas-cloud (a symlink to the git clone at `~/edwin-repos/fantasy-bot`). The `~/fantasy-bot/...` paths below are all still correct; only the old absolute `/Users/claudeserver/...` form is dead.
 
 ### File map
 
@@ -793,21 +795,38 @@ All scripts live in `/Users/claudeserver/fantasy-bot/` on Cocky-Claude.
 | `~/fantasy-bot/.alert_state` | notify.py throttle state (one entry per script per day) |
 | `~/fantasy-bot/venv/` | Python 3.9 virtualenv (uses `espn_api`, `requests` packages) |
 
-### Cron jobs
+### The schedule
+
+There is no crontab. Two schedulers, and knowing which is which saves an hour
+of confusion.
+
+**systemd timers** (`systemctl list-timers 'fantasy-*'`, units in `/etc/systemd/system/`):
 
 ```
-# Sunday 7pm ET — weekly report email
-0 19 * * 0 ~/fantasy-bot/venv/bin/python ~/fantasy-bot/espn_weekly_report.py >> ~/fantasy-bot/weekly.log 2>&1
-
-# Nightly 3am ET — moves recommender, then snapshot push
-0 3 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 espn_nightly_moves.py >> /Users/claudeserver/fantasy-bot/nightly.log 2>&1 ; /Users/claudeserver/fantasy-bot/venv/bin/python3 league_snapshot.py >> /Users/claudeserver/fantasy-bot/snapshot.log 2>&1
-
-# --- fantasy-bot data pipeline (added 2026-05-19, rescheduled 2026-05-21 for all-MLB universe) ---
-30 3 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 mlb_ingest.py >> /Users/claudeserver/fantasy-bot/ingest.log 2>&1
-30 4 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 views.py >> /Users/claudeserver/fantasy-bot/views.log 2>&1
-0 5 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 db_publish.py >> /Users/claudeserver/fantasy-bot/publish.log 2>&1
-0 6 * * * cd /Users/claudeserver/fantasy-bot && /Users/claudeserver/fantasy-bot/venv/bin/python3 health_check.py >> /Users/claudeserver/fantasy-bot/health.log 2>&1
+fantasy-ingest.timer    03:30 ET   mlb_ingest.py
+fantasy-views.timer     04:30 ET   views.py
+fantasy-anomaly.timer   04:45 ET   anomaly.py
+fantasy-health.timer    06:00 ET   health_check.py
+fantasy-shutdown.timer  2026-10-01 end of season
 ```
+
+**In-process loops inside Edwin's `bot.py`.** These are invisible to
+`list-timers`, which is exactly how the roster triage sat unnoticed for weeks:
+
+```
+04:00       nightly_advisor.py   morning brief to Discord
+05:07       db_publish.py        gzipped db + views to GitHub
+every 30m   roster_triage.py     in-game lineup fixes, from 30 min before the
+                                 day's first pitch until the last game is final
+```
+
+The triage has a switch: `/triage status|on|off|now` in Discord, or `on`/`off`
+written into `~/codex/edwin/state/fantasy-triage-enabled.txt`. Missing file
+means on. `journalctl -u edwin.service | grep fantasy-triage` shows every run.
+
+**Not running on atlas-cloud:** the Sunday 7pm `espn_weekly_report.py` email and
+the 3:00 AM `espn_nightly_moves.py` + `league_snapshot.py` pair had iMac cron
+lines and have no systemd equivalent yet. Port or retire, still undecided.
 
 ### How `league_snapshot.py` works
 
@@ -837,8 +856,8 @@ Modes:
 - Each pipeline script (`mlb_ingest.py`, `views.py`, `db_publish.py`) has a top-level `try/except` that emails a crash report.
 - Soft-fail checks: `mlb_ingest.py` alerts if nightly errors > 25 OR zero stat rows ingested; `db_publish.py` alerts on HTTP commit failures.
 - `health_check.py` runs independently at 6:00 AM, checks DB freshness + pull_log errors + Captain Phillips roster coverage + views freshness + public GitHub Pages URL HTTP 200. Sends one email listing every problem if any are found.
-- All throttled to one email per script per day via `~/fantasy-bot/.alert_state`.
-- All subjects + bodies are ASCII-only (the existing `send_email` chokes on emoji in the Subject header).
+- All throttled to one alert per script per day via `~/fantasy-bot/.alert_state`.
+- Alerts go to **Discord**, not email. `send_email` is `false` in the live config since 2026-07-21. The old ASCII-only rule (`send_email` chokes on emoji in the Subject header) applies only to that retired path.
 
 ### Load-bearing decisions (do not undo without thought)
 
@@ -894,11 +913,11 @@ Fetch `regression_watch.md`. It has both directions for hitters (xwOBA-wOBA gaps
 ### Debugging stale snapshot or data
 SSH in and run:
 ```bash
-tail -50 ~/fantasy-bot/snapshot.log     # league_snapshot.py output
 tail -50 ~/fantasy-bot/ingest.log       # mlb_ingest.py output
 tail -50 ~/fantasy-bot/publish.log      # db_publish.py output
 ls -la ~/fantasy-bot/public/            # local mtimes
-crontab -l
+systemctl list-timers 'fantasy-*'       # the timer half of the schedule
+journalctl -u edwin.service | grep -E 'fantasy-(triage|advisor|publish)'
 ./venv/bin/python3 health_check.py      # canonical "is everything OK"
 ```
 
