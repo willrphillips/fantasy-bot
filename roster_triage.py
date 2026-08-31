@@ -285,22 +285,19 @@ def triage():
     log(res.get("detail") or "lineup set")
 
     # ESPN answers 200 to a move it then ignores, so a successful POST is not evidence the
-    # lineup changed. Read the roster back and believe only what actually moved. Same lesson as
-    # the morning brief, which stopped claiming an add/drop was done before ESPN confirmed it.
+    # lineup changed. set_lineup now reads the roster back and reports `stuck`; believe that,
+    # not `ok`. Same lesson as the morning brief, which stopped claiming an add/drop was done
+    # before ESPN confirmed it.
     if not DRY_RUN:
         wanted = res.get("moves") or []
-        after = fantasy_exec.get_roster()
-        if after.get("ok") and wanted:
-            slot_now = {p["player_id"]: p["slot"] for p in after["roster"]}
-            stuck = [m for m in wanted if slot_now.get(m["player_id"]) != m["to_slot"]]
-            if stuck and len(stuck) == len(wanted):
+        stuck = res.get("stuck") or []
+        if wanted and stuck:
+            names = ", ".join(m["name"] for m in stuck)
+            if len(stuck) == len(wanted):
                 # Nothing took. Say nothing rather than post a change that did not happen.
-                log("ESPN accepted the request and applied none of it: "
-                    + ", ".join(m["name"] for m in stuck))
+                log(f"ESPN accepted the request and applied none of it: {names}")
                 return [], None
-            if stuck:
-                lines.append("ESPN did not apply: "
-                             + ", ".join(m["name"] for m in stuck))
+            lines.append(f"ESPN did not apply: {names}")
 
     # Sanity check — log-only, nothing here should ever fire given the passes above. Forecast
     # fallback picks are deliberately active with no game today, so they're excluded here.

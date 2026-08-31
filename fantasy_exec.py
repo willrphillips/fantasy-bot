@@ -545,6 +545,28 @@ def add_drop(add_name: str, drop_name: str, txn_type: str = "WAIVER",
                 err = f"{err} | retried as {other}: {err2}"
 
     extras["txn_type"] = txn_type
+
+    # A FREEAGENT add is immediate, so it can and must be confirmed. A WAIVER claim is
+    # deliberately NOT confirmable here: it sits pending until waivers process, so an
+    # unchanged roster is the correct outcome and no caller may report it as done.
+    pending = ok and txn_type == "WAIVER"
+    extras["pending"] = pending
+    if ok and not pending:
+        try:
+            _, _, _, after = _connect(ctx)
+        except Exception:                     # noqa: BLE001
+            after = None
+        if after is not None:
+            ids = {q["player_id"] for q in after}
+            landed = (add_obj.playerId in ids) and (drop_p["player_id"] not in ids)
+            extras["verified"] = landed
+            if not landed:
+                ok = False
+                err = (f"ESPN reported success but the roster is unchanged: "
+                       f"{add_obj.name} is not on it, or {drop_p['name']} still is")
+    if pending:
+        summary = f"{summary} (claim submitted, pending waiver processing)"
+
     return _result(action, ctx.key, ok, False,
                    summary if ok else f"failed — {summary}",
                    None if ok else err, **extras)
@@ -606,6 +628,23 @@ def set_lineup(starters: list[str], dry_run: bool = False,
         ],
     }
     ok, post_err = _post_transaction(ctx, payload)
+    if ok:
+        # ESPN answers 200 to a move it then ignores: a slot is frozen the moment that
+        # player's game starts. So a successful POST is not evidence the lineup changed.
+        # Read the roster back and report what actually landed. Extras gain `applied`,
+        # `stuck` and `verified`; callers should believe those, not `ok`. (2026-08-30)
+        try:
+            _, _, _, after = _connect(ctx)
+        except Exception:                     # noqa: BLE001
+            after = None                      # cannot verify; leave the optimistic answer
+        if after is not None:
+            slot_now = {q["player_id"]: q["slot"] for q in after}
+            applied = [m for m in moves if slot_now.get(m["player_id"]) == m["to_slot"]]
+            stuck = [m for m in moves if slot_now.get(m["player_id"]) != m["to_slot"]]
+            extras.update(applied=applied, stuck=stuck, verified=not stuck)
+            if stuck:
+                summary = (f"{len(applied)} of {len(moves)} lineup move(s) landed; "
+                           "ESPN ignored " + ", ".join(m["name"] for m in stuck))
     return _result(action, ctx.key, ok, False,
                    summary if ok else f"failed — {summary}",
                    None if ok else post_err, **extras)
@@ -724,8 +763,12 @@ def propose_trade(send: list[str], receive: list[str], dry_run: bool = False,
         ),
     }
     ok, err = _post_transaction(ctx, payload)
+    # A proposal changes nothing until the other manager accepts, so there is nothing to read
+    # back and `ok` must never be reported as "done". Say what it actually is. (2026-08-30)
+    extras["pending"] = bool(ok)
     return _result(action, ctx.key, ok, False,
-                   f"proposed {summary}" if ok else f"failed — {summary}",
+                   (f"proposed {summary}; nothing changes until {other_name} accepts")
+                   if ok else f"failed — {summary}",
                    None if ok else err, **extras)
 
 
