@@ -33,6 +33,48 @@ ingest + publish system). The pre-existing `espn_nightly_moves`,
 > 2026-07-21 entry below); these are unused, not broken. Don't touch
 > until asked.
 
+## 2026-08-30 — the triage was announcing lineup moves ESPN had already locked
+
+Found while checking whether the 30-minute triage was running at all. It was.
+The moves were not.
+
+**The defect.** ESPN freezes a player's roster slot the moment his game starts.
+A slot change involving him is answered `HTTP 200` and then silently ignored.
+`fantasy_exec._post_transaction` treats 200 as success, so `set_lineup` returned
+`ok=True`, and `roster_triage` posted "the lineup has changed" to Discord. The
+next cycle recomputed the identical swap, because nothing had moved, and posted
+it again. Observed all evening on 2026-08-30: Cavalli in, Detmers out, both
+games Final, every 30 minutes.
+
+**The second cause underneath it.** `build_team_matchups()` read
+`fetch_schedule()`, which caches once per calendar day. The copy written by the
+4am job says every game is `Preview`, so even a lock-aware check would have seen
+an empty schedule of started games. `bot.py` already knew this and passed
+`force_refresh=True` for its own window check; the triage did not.
+
+**Fixed in `01f2893`.**
+- `build_team_matchups(date_str=None, force_refresh=False)` now also reports
+  `started` per team, from `abstractGameState != "Preview"`. A postponed game
+  reads as Final but never locks anyone, so it is excluded and stays movable.
+- `roster_triage` calls it with `force_refresh=True` every cycle.
+- Locked players are pinned where they sit. An active one keeps his slot and
+  spends pitcher capacity (`open_capacity = PITCHER_CAPACITY - len(locked_active)`);
+  a benched one is not a candidate at all. The pitcher rebuild, which is a full
+  daily rebuild by design, now happens around them instead of through them.
+- After a real submit the roster is read back and only the moves that actually
+  landed are reported. If none landed, the run stays silent and logs the fact
+  rather than posting a change that did not happen. Same lesson as `6a7aa6d`,
+  which stopped the morning brief asserting an add/drop before ESPN confirmed it.
+
+**Verified on the live roster the same night**, with all 28 teams' games started:
+the triage proposes nothing. Re-run against the identical roster with `started`
+forced to `False`, the two phantom moves reappear. The fix is scoped to the
+lock, it does not mute the pass.
+
+**Still true and not fixed here:** a 200 from ESPN is not proof of anything.
+The read-back is the only reliable confirmation, and any future write path
+(`add_drop`, `propose_trade`) should get the same treatment before it is trusted.
+
 ## 2026-08-30 — `roster_triage.py` is driven by Edwin, not by a timer
 
 Recorded here because this repo's docs do not say who runs this script, and that
