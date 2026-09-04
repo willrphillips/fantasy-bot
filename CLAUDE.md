@@ -16,6 +16,12 @@ These apply to every session, both Claude Code and Claude Chat.
   after. No hedging, no fantasy-is-random disclaimers.
 - **Strategy C stands.** Hard-punt SV + SB. Prioritize HR/RBI (the weak
   cats); protect the W / ERA / WHIP / K edge. HLD is a scoring cat.
+- **Baronball = swing for the fences.** When two moves are close, take
+  the higher-ceiling one: the boom/bust 30-HR-pace bat over the steady
+  low-power floor guy, the high-K arm with a great matchup over the safe
+  innings-eater. Strategy C says *which* cats to chase; Baronball says
+  *how* to pick the players — favor upside/variance over safe floor.
+  Bias toward bold add/drop and start/sit calls, not hedged ones.
 - **Confirm everything; never fabricate.** Ground every stat in
   `fantasy.db` / `snapshot.md`. Do NOT use live web stats to value
   players — this league is a simulated universe and diverges from
